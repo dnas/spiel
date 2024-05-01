@@ -66,6 +66,7 @@ int main(int argc, char** argv) {
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame(game_name, params);
 
+
   if (!game) {
     std::cerr << "problem with loading game, exiting..." << std::endl;
     return -1;

@@ -41,6 +41,7 @@ void CheckNashKuhnPoker(const Game& game, const Policy& policy) {
   constexpr float nash_value = 1.0 / 18.0;
   constexpr float eps = 1e-3;
 
+  std::cout << game_value[0] << ", " << game_value[1] << std::endl;
   SPIEL_CHECK_EQ(2, game_value.size());
   SPIEL_CHECK_FLOAT_NEAR((float)game_value[0], -nash_value, eps);
   SPIEL_CHECK_FLOAT_NEAR((float)game_value[1], nash_value, eps);
@@ -59,6 +60,36 @@ void CFRTest_KuhnPoker() {
   const std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
   CheckNashKuhnPoker(*game, *average_policy);
   CheckExploitabilityKuhnPoker(*game, *average_policy);
+}
+
+void CheckNashSimplePoker(const Game& game, const Policy& policy) {
+  std::cout << TabularPolicy(game, policy).ToStringSorted() << std::endl;
+  const std::vector<double> game_value =
+      ExpectedReturns(*game.NewInitialState(), policy, -1);
+
+  // 1/18 is the Nash value. See https://en.wikipedia.org/wiki/Kuhn_poker
+  constexpr float nash_value = 1.0 / 18.0;
+  constexpr float eps = 1e-3;
+
+  std::cout << game_value[0] << ", " << game_value[1] << std::endl;
+  SPIEL_CHECK_EQ(2, game_value.size());
+  SPIEL_CHECK_FLOAT_NEAR((float)game_value[0], nash_value, eps);
+  SPIEL_CHECK_FLOAT_NEAR((float)game_value[1], -nash_value, eps);
+}
+
+void CheckExploitabilitySimplePoker(const Game& game, const Policy& policy) {
+  SPIEL_CHECK_LE(Exploitability(game, policy), 0.05);
+}
+
+void CFRTest_SimplePoker() {
+  std::shared_ptr<const Game> game = LoadGame("simple_poker");
+  CFRSolver solver(*game);
+  for (int i = 0; i < 300; i++) {
+    solver.EvaluateAndUpdatePolicy();
+  }
+  const std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
+  CheckNashSimplePoker(*game, *average_policy);
+  CheckExploitabilitySimplePoker(*game, *average_policy);
 }
 
 void CFRTest_IIGoof4() {
@@ -263,6 +294,9 @@ namespace algorithms = open_spiel::algorithms;
 
 int main(int argc, char** argv) {
   algorithms::CFRTest_KuhnPoker();
+  std::cout << "SIMPLE POKER:" << std::endl;
+  algorithms::CFRTest_SimplePoker();
+  return;
   algorithms::CFRTest_IIGoof4();
   algorithms::CFRPlusTest_KuhnPoker();
   algorithms::CFRTest_KuhnPokerRunsWithThreePlayers(

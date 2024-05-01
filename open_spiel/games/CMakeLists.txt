@@ -94,6 +94,8 @@ set(GAME_SOURCES
   kriegspiel/kriegspiel.h
   kuhn_poker/kuhn_poker.cc
   kuhn_poker/kuhn_poker.h
+  simple_poker/simple_poker.cc
+  simple_poker/simple_poker.h
   laser_tag/laser_tag.cc
   laser_tag/laser_tag.h
   leduc_poker/leduc_poker.cc
