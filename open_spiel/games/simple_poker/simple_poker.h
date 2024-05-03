@@ -39,8 +39,8 @@
 namespace open_spiel {
 namespace simple_poker {
 
-inline constexpr const int kNumInfoStatesP0 = 3;
-inline constexpr const int kNumInfoStatesP1 = 3;
+inline constexpr const int kNumInfoStatesP0 = 6;
+inline constexpr const int kNumInfoStatesP1 = 6;
 
 enum ActionType { kPass = 0, kBet = 1 };
 
@@ -49,7 +49,7 @@ class SimpleObserver;
 
 class SimpleState : public State {
  public:
-  explicit SimpleState(std::shared_ptr<const Game> game);
+  explicit SimpleState(std::shared_ptr<const Game> game, int total_cards);
   SimpleState(const SimpleState&) = default;
 
   Player CurrentPlayer() const override;
@@ -95,6 +95,8 @@ class SimpleState : public State {
   int pot_;                      // the size of the pot
   // How much each player has contributed to the pot, indexed by pid.
   std::vector<int> ante_;
+
+  int total_cards_; //total number of cards
 };
 
 class SimpleGame : public Game {
@@ -102,15 +104,15 @@ class SimpleGame : public Game {
   explicit SimpleGame(const GameParameters& params);
   int NumDistinctActions() const override { return 2; }
   std::unique_ptr<State> NewInitialState() const override;
-  int MaxChanceOutcomes() const override { return num_players_ + 1; }
+  int MaxChanceOutcomes() const override { return num_players_+3; }
   int NumPlayers() const override { return num_players_; }
   double MinUtility() const override;
   double MaxUtility() const override;
   absl::optional<double> UtilitySum() const override { return 0; }
   std::vector<int> InformationStateTensorShape() const override;
   std::vector<int> ObservationTensorShape() const override;
-  int MaxGameLength() const override { return num_players_ * 2 - 1; }
-  int MaxChanceNodesInHistory() const override { return num_players_; }
+  int MaxGameLength() const override { return 1000000; }
+  int MaxChanceNodesInHistory() const override { return num_players_; } //No community cards
   std::shared_ptr<Observer> MakeObserver(
       absl::optional<IIGObservationType> iig_obs_type,
       const GameParameters& params) const override;
@@ -122,8 +124,10 @@ class SimpleGame : public Game {
   std::shared_ptr<SimpleObserver> private_observer_;
 
  private:
-  // Number of players.
+  // Number of players
   int num_players_;
+  // Number of cards
+  int total_cards_;
 };
 
 // Returns policy that always passes.
@@ -134,7 +138,7 @@ TabularPolicy GetAlwaysBetPolicy(const Game& game);
 
 // The optimal Simple policy as stated at https://en.wikipedia.org/wiki/Simple_poker
 // The Nash equilibrium is parametrized by NOTHING
-TabularPolicy GetOptimalPolicy();
+//TabularPolicy GetOptimalPolicy();
 
 }  // namespace simple_poker
 }  // namespace open_spiel

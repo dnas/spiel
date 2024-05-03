@@ -33,6 +33,7 @@ namespace {
 // Default parameters.
 constexpr int kDefaultPlayers = 2;
 constexpr double kAnte = 1;
+constexpr int kDefaultCards = 3;
 
 // Facts about the game
 const GameType kGameType{/*short_name=*/"simple_poker",
@@ -49,7 +50,8 @@ const GameType kGameType{/*short_name=*/"simple_poker",
                          /*provides_observation_string=*/true,
                          /*provides_observation_tensor=*/true,
                          /*parameter_specification=*/
-                         {{"players", GameParameter(kDefaultPlayers)}},
+                         {{"players", GameParameter(kDefaultPlayers)},
+                         {"total_cards", GameParameter(kDefaultCards)}},
                          /*default_loadable=*/true,
                          /*provides_factored_observation_string=*/true,
                         };
@@ -76,7 +78,6 @@ class SimpleObserver : public Observer {
     SPIEL_CHECK_GE(player, 0);
     SPIEL_CHECK_LT(player, state.num_players_);
     const int num_players = state.num_players_;
-    const int num_cards = num_players + 1;
 
     if (iig_obs_type_.private_info == PrivateInfoType::kSinglePlayer) {
       {  // Observing player.
@@ -84,7 +85,7 @@ class SimpleObserver : public Observer {
         out.at(player) = 1;
       }
       {  // The player's card, if one has been dealt.
-        auto out = allocator->Get("private_card", {num_cards});
+        auto out = allocator->Get("private_card", {-1234});
         if (state.history_.size() > player)
           out.at(state.history_[player].action) = 1;
       }
@@ -169,12 +170,13 @@ class SimpleObserver : public Observer {
   IIGObservationType iig_obs_type_;
 };
 
-SimpleState::SimpleState(std::shared_ptr<const Game> game)
+SimpleState::SimpleState(std::shared_ptr<const Game> game, int total_cards)
     : State(game),
       first_bettor_(kInvalidPlayer),
-      card_dealt_(game->NumPlayers() + 1, kInvalidPlayer),
+      card_dealt_(total_cards, kInvalidPlayer),
       winner_(kInvalidPlayer),
       pot_(kAnte * game->NumPlayers()),
+      total_cards_(total_cards),
       // How much each player has contributed to the pot, indexed by pid.
       ante_(game->NumPlayers(), kAnte) {}
 
@@ -190,8 +192,7 @@ int SimpleState::CurrentPlayer() const {
 void SimpleState::DoApplyAction(Action move) {
   // Additional book-keeping
   if (history_.size() < num_players_) {
-    // Give card `move` to player `history_.size()` (CurrentPlayer will return
-    // kChancePlayerId, so we use that instead).
+    // Give card `move` to player `history_.size()` (CurrentPlayer will return kChancePlayerId, so we use that instead).
     card_dealt_[move] = history_.size();
   } else if (move == ActionType::kBet) {
     if (first_bettor_ == kInvalidPlayer) first_bettor_ = CurrentPlayer();
@@ -205,18 +206,18 @@ void SimpleState::DoApplyAction(Action move) {
 
   // Check for the game being over.
   const int num_actions = history_.size() - num_players_;
-  if (first_bettor_ == kInvalidPlayer && num_actions == 1) {
-    // Nobody bet; the winner is the person with the highest card dealt,
-    // which is either the highest or the next-highest card.
+  if (first_bettor_ == kInvalidPlayer && num_actions == num_players_) {
+    // Nobody bet; the winner is the person with the highest card dealt
     // Losers lose 1, winner wins 1 * (num_players - 1)
-    winner_ = card_dealt_[num_players_]; // Get the player who has the K
-    if (winner_ == kInvalidPlayer) winner_ = card_dealt_[num_players_ - 1]; //If nobody has the K, the Q wins
+    winner_ = kInvalidPlayer;
+    int card_ind = total_cards_-1;
+    while(winner_==kInvalidPlayer) winner_ = card_dealt_[card_ind--];
   } else if (first_bettor_ != kInvalidPlayer &&
-             num_actions == 2) {
+             num_actions == num_players_ + first_bettor_) {
     // There was betting; so the winner is the person with the highest card
     // who stayed in the hand.
     // Check players in turn starting with the highest card.
-    for (int card = num_players_; card >= 0; --card) {
+    for (int card = total_cards_-1; card >= 0; card--) {
       const Player player = card_dealt_[card];
       if (player != kInvalidPlayer && DidBet(player)) {
         winner_ = player;
@@ -225,7 +226,7 @@ void SimpleState::DoApplyAction(Action move) {
     }
     SPIEL_CHECK_NE(winner_, kInvalidPlayer);
   }
-  history_.pop_back();
+  history_.pop_back(); //tricky: in spiel.cc, applying an action already adds it to history_. Thus we pop_back to prevent a double add
 }
 
 std::vector<Action> SimpleState::LegalActions() const {
@@ -329,8 +330,8 @@ void SimpleState::UndoAction(Player player, Action move) {
 std::vector<std::pair<Action, double>> SimpleState::ChanceOutcomes() const {
   SPIEL_CHECK_TRUE(IsChanceNode());
   std::vector<std::pair<Action, double>> outcomes;
-  const double p = 1.0 / (num_players_ + 1 - history_.size());
-  for (int card = 0; card < card_dealt_.size(); ++card) {
+  const double p = 1.0 / (total_cards_ - history_.size());
+  for (int card = 0; card < card_dealt_.size(); card++) {
     if (card_dealt_[card] == kInvalidPlayer) outcomes.push_back({card, p});
   }
   return outcomes;
@@ -339,10 +340,12 @@ std::vector<std::pair<Action, double>> SimpleState::ChanceOutcomes() const {
 bool SimpleState::DidBet(Player player) const {
   if (first_bettor_ == kInvalidPlayer) {
     return false;
-  } else if (player == first_bettor_) { //first_bettor_ can only be 0
+  } else if (player == first_bettor_) {
     return true;
-  } else{
+  } else if (player > first_bettor_) {
     return history_[num_players_ + player].action == ActionType::kBet;
+  } else {
+    return history_[num_players_ * 2 + player].action == ActionType::kBet;
   }
 }
 
@@ -371,7 +374,7 @@ std::unique_ptr<State> SimpleState::ResampleFromInfostate(
 }
 
 SimpleGame::SimpleGame(const GameParameters& params)
-    : Game(kGameType, params), num_players_(ParameterValue<int>("players")) {
+    : Game(kGameType, params), num_players_(ParameterValue<int>("players")), total_cards_(ParameterValue<int>("total_cards")) {
   SPIEL_CHECK_GE(num_players_, kGameType.min_num_players);
   SPIEL_CHECK_LE(num_players_, kGameType.max_num_players);
   default_observer_ = std::make_shared<SimpleObserver>(kDefaultObsType);
@@ -387,7 +390,7 @@ SimpleGame::SimpleGame(const GameParameters& params)
 }
 
 std::unique_ptr<State> SimpleGame::NewInitialState() const {
-  return std::unique_ptr<State>(new SimpleState(shared_from_this()));
+  return std::unique_ptr<State>(new SimpleState(shared_from_this(), total_cards_));
 }
 
 std::vector<int> SimpleGame::InformationStateTensorShape() const {
@@ -446,6 +449,7 @@ TabularPolicy GetAlwaysBetPolicy(const Game& game) {
   return GetPrefActionPolicy(game, {ActionType::kBet});
 }
 
+/*
 TabularPolicy GetOptimalPolicy() {
   std::unordered_map<std::string, ActionsAndProbs> policy;
 
@@ -461,6 +465,6 @@ TabularPolicy GetOptimalPolicy() {
   policy["2b"] = {{0, 0}, {1, 1}};
   return TabularPolicy(policy);
 }
-
+*/
 }  // namespace simple_poker
 }  // namespace open_spiel
