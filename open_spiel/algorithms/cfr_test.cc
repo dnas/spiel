@@ -87,7 +87,7 @@ void CFRTest_SimplePoker() {
   CFRSolver solver(*game);
   for (int i = 0; i < 100000; i++) {
     solver.EvaluateAndUpdatePolicy();
-    if(i%10000==0) std::cout << i/100 << std::endl;
+    if(i%1000==0) std::cout << i/100 << std::endl;
   }
   const std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
   CheckNashSimplePoker(*game, *average_policy);
@@ -295,7 +295,7 @@ void CFRTest_CFRSolverSerialization() {
 namespace algorithms = open_spiel::algorithms;
 
 int main(int argc, char** argv) {
-  //algorithms::CFRTest_KuhnPoker();
+  algorithms::CFRTest_KuhnPoker();
   std::cout << "SIMPLE POKER:" << std::endl;
   algorithms::CFRTest_SimplePoker();
   return;
