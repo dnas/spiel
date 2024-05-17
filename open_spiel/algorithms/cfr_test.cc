@@ -69,7 +69,8 @@ void CheckNashSimplePoker(const Game& game, const Policy& policy) {
       ExpectedReturns(*game.NewInitialState(), policy, -1);
 
   // 1/18 is the Nash value. See https://en.wikipedia.org/wiki/Kuhn_poker
-  constexpr float nash_value = 0.061;
+  float nash_value = 0.061;
+  nash_value = 1.0 / 18.0;
   constexpr float eps = 1e-3;
 
   std::cout << game_value[0] << ", " << game_value[1] << std::endl;

@@ -42,7 +42,7 @@ namespace simple_poker {
 inline constexpr const int kNumInfoStatesP0 = 6;
 inline constexpr const int kNumInfoStatesP1 = 6;
 
-enum ActionType { kPass = 0, kBet = 1 };
+enum ActionType { kPass = 0, kCall = 1, kRaise = 2};
 
 class SimpleGame;
 class SimpleObserver;
@@ -65,12 +65,11 @@ class SimpleState : public State {
   void ObservationTensor(Player player,
                          absl::Span<float> values) const override;
   std::unique_ptr<State> Clone() const override;
-  void UndoAction(Player player, Action move) override;
+  //void UndoAction(Player player, Action move) override;
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
   std::vector<Action> LegalActions() const override;
   std::vector<int> hand() const { return {card_dealt_[CurrentPlayer()]}; }
-  std::unique_ptr<State> ResampleFromInfostate(
-      int player_id, std::function<double()> rng) const override;
+  //std::unique_ptr<State> ResampleFromInfostate( int player_id, std::function<double()> rng) const override;
 
   const std::vector<int>& CardDealt() const { return card_dealt_; }
 
@@ -97,6 +96,8 @@ class SimpleState : public State {
   std::vector<int> ante_;
 
   int total_cards_; //total number of cards
+  int remaining_players_; //remaining players
+  bool showdown_; //was there a showdown? 
 };
 
 class SimpleGame : public Game {

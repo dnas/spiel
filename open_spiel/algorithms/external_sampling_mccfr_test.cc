@@ -18,6 +18,7 @@
 #include <iostream>
 #include <random>
 
+#include "open_spiel/algorithms/expected_returns.h"
 #include "open_spiel/algorithms/tabular_exploitability.h"
 #include "open_spiel/games/kuhn_poker/kuhn_poker.h"
 #include "open_spiel/games/leduc_poker/leduc_poker.h"
@@ -41,6 +42,9 @@ void MCCFR_2PGameTest(const std::string& game_name, std::mt19937* rng,
   double nash_conv = NashConv(*game, *average_policy, true);
   std::cout << "Game: " << game_name << ", iters = " << iterations
             << ", NashConv: " << nash_conv << std::endl;
+  const Game& mygame = *game;
+  const std::vector<double> game_value = ExpectedReturns(*mygame.NewInitialState(), *average_policy, -1);
+  std::cout << game_value[0] << ", " << game_value[1] << std::endl;
   SPIEL_CHECK_LE(nash_conv, nashconv_upperbound);
 }
 
@@ -102,8 +106,8 @@ int main(int argc, char** argv) {
   // "Monte Carlo Sampling and Regret Minimization For Equilibrium Computation
   // and Decision-Making in Large Extensive Form Games", 2013).
   std::mt19937 rng(algorithms::kSeed);
-  algorithms::MCCFR_2PGameTest("kuhn_poker", &rng, 1000, 0.05);
-  algorithms::MCCFR_2PGameTest("leduc_poker", &rng, 1000, 2.5);
+  algorithms::MCCFR_2PGameTest("kuhn_poker", &rng, 10000, 0.05);
+  algorithms::MCCFR_2PGameTest("leduc_poker", &rng, 10000, 2.5);
   algorithms::MCCFR_2PGameTest("liars_dice", &rng, 100, 1.6);
   algorithms::MCCFR_KuhnPoker3PTest(&rng);
   algorithms::MCCFR_SerializationTest();

@@ -134,8 +134,11 @@ class SimpleObserver : public Observer {
     if (iig_obs_type_.public_info) {
       if (iig_obs_type_.perfect_recall) {
         // Perfect recall public info.
-        for (int i = state.num_players_; i < state.history_.size(); ++i)
-          result.push_back(state.history_[i].action ? 'b' : 'p');
+        for (int i = state.num_players_; i < state.history_.size(); ++i){
+          if(state.history_[i].action==ActionType::kPass) result.push_back('p');
+          else if(state.history_[i].action==ActionType::kCall) result.push_back('c');
+          else result.push_back('r');
+        }
       } else {
         // Imperfect recall public info - two different formats.
         if (iig_obs_type_.private_info == PrivateInfoType::kNone) {
@@ -175,6 +178,8 @@ SimpleState::SimpleState(std::shared_ptr<const Game> game, int total_cards)
       first_bettor_(kInvalidPlayer),
       card_dealt_(total_cards, kInvalidPlayer),
       winner_(kInvalidPlayer),
+      showdown_(false),
+      remaining_players_(game->NumPlayers()),
       pot_(kAnte * game->NumPlayers()),
       total_cards_(total_cards),
       // How much each player has contributed to the pot, indexed by pid.
@@ -194,10 +199,30 @@ void SimpleState::DoApplyAction(Action move) {
   if (history_.size() < num_players_) {
     // Give card `move` to player `history_.size()` (CurrentPlayer will return kChancePlayerId, so we use that instead).
     card_dealt_[move] = history_.size();
-  } else if (move == ActionType::kBet) {
-    if (first_bettor_ == kInvalidPlayer) first_bettor_ = CurrentPlayer();
-    pot_ += 1;
-    ante_[CurrentPlayer()] += kAnte;
+  } else if (move == ActionType::kRaise) {
+    if (first_bettor_ == kInvalidPlayer){
+      first_bettor_ = CurrentPlayer();
+      pot_ += 1;
+      ante_[CurrentPlayer()] += 1;
+    }else{
+      pot_ += 3;
+      ante_[CurrentPlayer()] = 4;
+    }
+  }else if(move==ActionType::kCall){
+    if(CurrentPlayer() == first_bettor_){
+      pot_ += 2;
+      ante_[CurrentPlayer()] = 4;
+    }else{
+      pot_ += 1;
+      ante_[CurrentPlayer()] += 1;
+    }
+    showdown_ = true;
+  }else if(move==ActionType::kPass){
+    if(first_bettor_!=kInvalidPlayer){
+      winner_ = (CurrentPlayer()+1)%2;
+      remaining_players_ = 1;
+      showdown_ = false;
+    }
   }
 
   // We undo that before exiting the method.
@@ -212,18 +237,18 @@ void SimpleState::DoApplyAction(Action move) {
     winner_ = kInvalidPlayer;
     int card_ind = total_cards_-1;
     while(winner_==kInvalidPlayer) winner_ = card_dealt_[card_ind--];
-  } else if (first_bettor_ != kInvalidPlayer &&
-             num_actions == num_players_ + first_bettor_) {
+    SPIEL_CHECK_NE(winner_, kInvalidPlayer);
+  } else if (remaining_players_==1){
+    //winner_ = (CurrentPlayer()+1)%2;
+    SPIEL_CHECK_NE(winner_, kInvalidPlayer);
+    SPIEL_CHECK_NE(winner_, kChancePlayerId);
+  }else if(showdown_){
     // There was betting; so the winner is the person with the highest card
     // who stayed in the hand.
     // Check players in turn starting with the highest card.
-    for (int card = total_cards_-1; card >= 0; card--) {
-      const Player player = card_dealt_[card];
-      if (player != kInvalidPlayer && DidBet(player)) {
-        winner_ = player;
-        break;
-      }
-    }
+    winner_ = kInvalidPlayer;
+    int card_ind = total_cards_-1;
+    while(winner_==kInvalidPlayer) winner_ = card_dealt_[card_ind--];
     SPIEL_CHECK_NE(winner_, kInvalidPlayer);
   }
   history_.pop_back(); //tricky: in spiel.cc, applying an action already adds it to history_. Thus we pop_back to prevent a double add
@@ -238,7 +263,10 @@ std::vector<Action> SimpleState::LegalActions() const {
     }
     return actions;
   } else {
-    return {ActionType::kPass, ActionType::kBet};
+    std::vector<Action> actions = {ActionType::kPass};
+    if(first_bettor_!=kInvalidPlayer&&ante_[CurrentPlayer()]<ante_[(CurrentPlayer()+1)%2]) actions.push_back(ActionType::kCall);
+    if(ante_[CurrentPlayer()]<4&&ante_[(CurrentPlayer()+1)%2]<4) actions.push_back(ActionType::kRaise);
+    return actions;
   }
 }
 
@@ -247,8 +275,9 @@ std::string SimpleState::ActionToString(Player player, Action move) const {
     return absl::StrCat("Deal:", move);
   else if (move == ActionType::kPass)
     return "Pass";
-  else
-    return "Bet";
+  else if(move==ActionType::kCall)
+    return "Call";
+  else return "Raise";
 }
 
 std::string SimpleState::ToString() const {
@@ -259,10 +288,12 @@ std::string SimpleState::ToString() const {
     absl::StrAppend(&str, history_[i].action);
   }
 
-  // The betting history: p for Pass, b for Bet
+  // The betting history: p for Pass, c for Call, r for Raise
   if (history_.size() > num_players_) str.push_back(' ');
   for (int i = num_players_; i < history_.size(); ++i) {
-    str.push_back(history_[i].action ? 'b' : 'p');
+    if(history_[i].action==ActionType::kPass) str.push_back('p');
+    else if(history_[i].action==ActionType::kCall) str.push_back('c');
+    else str.push_back('r');
   }
 
   return str;
@@ -277,9 +308,11 @@ std::vector<double> SimpleState::Returns() const {
 
   std::vector<double> returns(num_players_);
   for (auto player = Player{0}; player < num_players_; ++player) {
-    const int bet = DidBet(player) ? 2 : 1;
-    returns[player] = (player == winner_) ? (pot_ - bet) : -bet;
+    returns[player] = (player == winner_) ? (pot_ - ante_[player]) : -ante_[player];
+    //std::cout << "Player: " << player << " ret: " << returns[player] << " winner? "<< (player == winner_) << std::endl;
+    //if(player!=winner_) std::cout << "Winner is actually " << winner_ << std::endl;
   }
+  SPIEL_CHECK_FLOAT_NEAR((float)(returns[0]+returns[1]), 0.0, 0.01);
   return returns;
 }
 
@@ -311,13 +344,14 @@ std::unique_ptr<State> SimpleState::Clone() const {
   return std::unique_ptr<State>(new SimpleState(*this));
 }
 
+/*
 void SimpleState::UndoAction(Player player, Action move) {
   if (history_.size() <= num_players_) {
     // Undoing a deal move.
     card_dealt_[move] = kInvalidPlayer;
   } else {
     // Undoing a bet / pass.
-    if (move == ActionType::kBet) {
+    if (move == ActionType::kRaise) {
       pot_ -= 1;
       if (player == first_bettor_) first_bettor_ = kInvalidPlayer;
     }
@@ -326,6 +360,7 @@ void SimpleState::UndoAction(Player player, Action move) {
   history_.pop_back();
   --move_number_;
 }
+*/
 
 std::vector<std::pair<Action, double>> SimpleState::ChanceOutcomes() const {
   SPIEL_CHECK_TRUE(IsChanceNode());
@@ -337,18 +372,21 @@ std::vector<std::pair<Action, double>> SimpleState::ChanceOutcomes() const {
   return outcomes;
 }
 
+/*
 bool SimpleState::DidBet(Player player) const {
   if (first_bettor_ == kInvalidPlayer) {
     return false;
   } else if (player == first_bettor_) {
     return true;
   } else if (player > first_bettor_) {
-    return history_[num_players_ + player].action == ActionType::kBet;
+    return history_[num_players_ + player].action == ActionType::kRaise;
   } else {
-    return history_[num_players_ * 2 + player].action == ActionType::kBet;
+    return history_[num_players_ * 2 + player].action == ActionType::kRaise;
   }
 }
+*/
 
+/*
 std::unique_ptr<State> SimpleState::ResampleFromInfostate(
     int player_id, std::function<double()> rng) const {
   std::unique_ptr<State> state = game_->NewInitialState();
@@ -372,6 +410,7 @@ std::unique_ptr<State> SimpleState::ResampleFromInfostate(
   }
   return state;
 }
+*/
 
 SimpleGame::SimpleGame(const GameParameters& params)
     : Game(kGameType, params), num_players_(ParameterValue<int>("players")), total_cards_(ParameterValue<int>("total_cards")) {
@@ -446,7 +485,7 @@ TabularPolicy GetAlwaysPassPolicy(const Game& game) {
 TabularPolicy GetAlwaysBetPolicy(const Game& game) {
   SPIEL_CHECK_TRUE(
       dynamic_cast<SimpleGame*>(const_cast<Game*>(&game)) != nullptr);
-  return GetPrefActionPolicy(game, {ActionType::kBet});
+  return GetPrefActionPolicy(game, {ActionType::kRaise});
 }
 
 /*
