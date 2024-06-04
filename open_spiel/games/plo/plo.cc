@@ -1,0 +1,869 @@
+// Copyright 2019 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "open_spiel/games/plo/plo.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <numeric>
+#include <utility>
+
+#include "open_spiel/abseil-cpp/absl/algorithm/container.h"
+#include "open_spiel/abseil-cpp/absl/memory/memory.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_format.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_join.h"
+#include "open_spiel/game_parameters.h"
+#include "open_spiel/observer.h"
+#include "open_spiel/policy.h"
+#include "open_spiel/spiel.h"
+#include "open_spiel/spiel_utils.h"
+
+namespace open_spiel {
+namespace plo {
+namespace {
+
+std::vector<double> kBlinds = {0.5, 1}; //Button and Big Blind. The button acts first pre-flop, the BB acts first post-flop
+
+const GameType kGameType{/*short_name=*/"plo",
+                         /*long_name=*/"Pot Limit Omaha",
+                         GameType::Dynamics::kSequential,
+                         GameType::ChanceMode::kExplicitStochastic,
+                         GameType::Information::kImperfectInformation,
+                         GameType::Utility::kZeroSum,
+                         GameType::RewardModel::kTerminal,
+                         /*max_num_players=*/2,
+                         /*min_num_players=*/2,
+                         /*provides_information_state_string=*/true,
+                         /*provides_information_state_tensor=*/true,
+                         /*provides_observation_string=*/true,
+                         /*provides_observation_tensor=*/true,
+                         /*parameter_specification=*/
+                         {{"players", GameParameter(kDefaultPlayers)},
+                          {"suit_isomorphism", GameParameter(false)},
+                          {"game_abstraction", GameParameter(false)}}};
+
+std::shared_ptr<const Game> Factory(const GameParameters& params) {
+  return std::shared_ptr<const Game>(new PloGame(params));
+}
+
+REGISTER_SPIEL_GAME(kGameType, Factory);
+
+std::string StatelessActionToString(Action action) {
+  if (action == ActionType::kF) {
+    return "Fold";
+  } else if (action == ActionType::kX) {
+    return "Check";
+  } else if (action == ActionType::kC) {
+    return "Call";
+  } else if (action == ActionType::kB) {
+    return "Bet";
+  } else if (action == ActionType::kR) {
+    return "Raise";
+  } else {
+    SpielFatalError(absl::StrCat("Unknown action: ", action));
+  }
+  return "Will not return.";
+}
+
+RegisterSingleTensorObserver single_tensor(kGameType.short_name);
+}  // namespace
+
+// The Observer class is responsible for creating representations of the game
+// state for use in learning algorithms. It handles both string and tensor
+// representations, and any combination of public information and private
+// information (none, observing player only, or all players).
+//
+// If a perfect recall observation is requested, it must be possible to deduce
+// all previous observations for the same information type from the current
+// observation.
+
+class PloObserver : public Observer {
+ public:
+  PloObserver(IIGObservationType iig_obs_type)
+      : Observer(/*has_string=*/true, /*has_tensor=*/true),
+        iig_obs_type_(iig_obs_type) {}
+
+  //
+  // These helper methods each write a piece of the tensor observation.
+  //
+
+  // Identity of the observing player. One-hot vector of size num_players.
+  static void WriteObservingPlayer(const PloState& state, int player,
+                                   Allocator* allocator) {
+    auto out = allocator->Get("player", {state.num_players_});
+    out.at(player) = 1;
+  }
+
+  // Private card of the observing player. One-hot vector of size num_cards.
+  static void WriteSinglePlayerHole(const PloState& state, int player,
+                                    Allocator* allocator) {
+    auto out = allocator->Get("private_hole", {270725});
+    Hole hole_cards = state.private_hole_[player];
+    if (hole_cards != kInvalidHole) out.at(hole_cards.cards[0].rank) = 1;
+  }
+
+  // Private cards of all players. Tensor of shape [num_players, num_cards].
+  static void WriteAllPlayerHoles(const PloState& state,
+                                  Allocator* allocator) {
+    auto out = allocator->Get("private_hole",
+                              {state.num_players_, 270725});
+    for (int p = 0; p < state.num_players_; ++p) {
+      Hole hole_cards = state.private_hole_[p];
+      if (hole_cards != kInvalidHole) out.at(p, state.private_hole_[p].cards[0].rank) = 1;
+    }
+  }
+
+  // Community cards. One-hot vector of size num_cards.
+  static void WriteCommunityCards(const PloState& state,
+                                 Allocator* allocator) {
+    auto out = allocator->Get("community_card", {270725});
+    if (state.public_cards_ != std::vector<Card>{kInvalidCard, kInvalidCard, kInvalidCard}) {
+      out.at(state.public_cards_[0].rank, state.public_cards_[1].rank, state.public_cards_[2].rank) = 1;
+    }
+  }
+
+  // Betting sequence; shape [num_rounds, bets_per_round, num_actions].
+  static void WriteBettingSequence(const PloState& state,
+                                   Allocator* allocator) {
+    const int kNumRounds = 2;
+    const int kBitsPerAction = 3;
+    const int max_bets_per_round = 1000;
+    auto out = allocator->Get("betting",
+                              {kNumRounds, max_bets_per_round, kBitsPerAction});
+    for (int round : {0, 1}) {
+      const auto& bets =
+          (round == 0) ? state.round0_sequence_ : state.round1_sequence_;
+      for (int i = 0; i < bets.size(); ++i) {
+        if (bets[i] == ActionType::kC) {
+          out.at(round, i, 0) = 1;  // Encode call as 10.
+        } else if (bets[i] == ActionType::kR) {
+          out.at(round, i, 1) = 1;  // Encode raise as 01.
+        }
+      }
+    }
+  }
+
+  // Pot contribution per player (integer per player).
+  static void WritePotContribution(const PloState& state,
+                                   Allocator* allocator) {
+    auto out = allocator->Get("pot_contribution", {state.num_players_});
+    for (auto p = Player{0}; p < state.num_players_; p++) {
+      out.at(p) = state.ante_[p];
+    }
+  }
+
+  // Writes the complete observation in tensor form.
+  // The supplied allocator is responsible for providing memory to write the
+  // observation into.
+  void WriteTensor(const State& observed_state, int player,
+                   Allocator* allocator) const override {
+    auto& state = open_spiel::down_cast<const PloState&>(observed_state);
+    SPIEL_CHECK_GE(player, 0);
+    SPIEL_CHECK_LT(player, state.num_players_);
+
+    // Observing player.
+    WriteObservingPlayer(state, player, allocator);
+
+    // Private card(s).
+    if (iig_obs_type_.private_info == PrivateInfoType::kSinglePlayer) {
+      WriteSinglePlayerHole(state, player, allocator);
+    } else if (iig_obs_type_.private_info == PrivateInfoType::kAllPlayers) {
+      WriteAllPlayerHoles(state, allocator);
+    }
+
+    // Public information.
+    if (iig_obs_type_.public_info) {
+      WriteCommunityCards(state, allocator);
+      iig_obs_type_.perfect_recall ? WriteBettingSequence(state, allocator)
+                                   : WritePotContribution(state, allocator);
+    }
+  }
+
+  // Writes an observation in string form. It would be possible just to
+  // turn the tensor observation into a string, but we prefer something
+  // somewhat human-readable.
+
+  std::string StringFrom(const State& observed_state,
+                         int player) const override {
+    auto& state = open_spiel::down_cast<const PloState&>(observed_state);
+    SPIEL_CHECK_GE(player, 0);
+    SPIEL_CHECK_LT(player, state.num_players_);
+    std::string result;
+
+    // Private card(s).
+    if (iig_obs_type_.private_info == PrivateInfoType::kSinglePlayer) {
+      absl::StrAppend(&result, "[Observer: ", player, "]");
+      absl::StrAppend(&result, "[Private: ", state.private_hole_[player].ToString(), "]");
+    } else if (iig_obs_type_.private_info == PrivateInfoType::kAllPlayers) {
+      absl::StrAppend(
+          &result, "[Privates: ", state.private_hole_[0].ToString(), " ", state.private_hole_[1].ToString(), "]");
+    }
+
+    // Public info. Not all of this is strictly necessary, but it makes the
+    // string easier to understand.
+    if (iig_obs_type_.public_info) {
+      absl::StrAppend(&result, "[Round ", state.round_, "]");
+      absl::StrAppend(&result, "[Player: ", state.cur_player_, "]");
+      absl::StrAppend(&result, "[Pot: ", state.pot_, "]");
+      absl::StrAppend(&result, "[Stack: ", absl::StrJoin(state.stack_, " "),
+                      "]");
+      if (state.public_cards_ != std::vector<Card>{kInvalidCard, kInvalidCard, kInvalidCard}) {
+        absl::StrAppend(&result, "[Public: ", state.public_cards_[0].ToString(), " ", state.public_cards_[1].ToString(), " ", state.public_cards_[2].ToString(), "]");
+      }
+      if (iig_obs_type_.perfect_recall) {
+        // Betting Sequence (for the perfect recall case)
+        absl::StrAppend(
+            &result, "[Round1: ", absl::StrJoin(state.round0_sequence_, " "),
+            "][Round2: ", absl::StrJoin(state.round1_sequence_, " "), "]");
+      } else {
+        // Pot contributions (imperfect recall)
+        absl::StrAppend(&result, "[Ante: ", absl::StrJoin(state.ante_, " "),
+                        "]");
+      }
+    }
+
+    // Done.
+    return result;
+  }
+
+ private:
+  IIGObservationType iig_obs_type_;
+};
+
+PloState::PloState(std::shared_ptr<const Game> game,
+                       bool suit_isomorphism, bool game_abstraction)
+    : State(game),
+      cur_player_(kChancePlayerId),
+      round_(0),   // Round number (0 or 1 - preflop or postflop).
+      nbet_(0),  // The current 'level' of the bet.
+      num_winners_(-1),
+      pot_(0),  // Number of chips in the pot.
+      action_is_closed_(false),
+      public_cards_(3, kInvalidCard),
+      // Number of cards remaining; not equal deck_.size()!
+      deck_remaining_(default_deck_size),
+      private_hole_dealt_(0),
+      players_remaining_(game->NumPlayers()),
+      // Is this player a winner? Indexed by pid.
+      winner_(game->NumPlayers(), false),
+      // Each player's single private card. Indexed by pid.
+      private_hole_(game->NumPlayers(), kInvalidHole),
+      // How much money each player has, indexed by pid.
+      stack_(game->NumPlayers()),
+      // How much each player has contributed to the pot, indexed by pid.
+      ante_(game->NumPlayers()),
+      // Sequence of actions for each round. Needed to report information
+      // state.
+      round0_sequence_(),
+      round1_sequence_(),
+      // Players cannot distinguish between cards of different suits with the
+      // same rank.
+      suit_isomorphism_(suit_isomorphism),
+      game_abstraction_(game_abstraction) {
+  // Cards by value (0-6 for standard 2-player game, kInvalidCard if no longer
+  // in the deck.)
+  std::iota(players_remaining_.begin(), players_remaining_.end(), 0);
+	for(int p = 0;p<game->NumPlayers();p++){
+		stack_[p] = kDefaultStacks-kBlinds[p];
+		ante_[p] = kBlinds[p];
+	}
+	deck_.clear();
+  if(default_deck_size==52){ //In normal conditions, add the 52 cards to the deck, consisting of ranks 0-12 (Deuce to Ace) and suits 0-3
+		for(int rank=0;rank<13;rank++){
+			for(int suit=0;suit<4;suit++){
+				deck_.push_back(Card(rank, suit));
+			}
+		}
+	}else if(default_deck_size==26){ //For testing: use 26 cards, 13 ranks with 2 suits
+    for(int rank=0;rank<13;rank++){
+			for(int suit=0;suit<2;suit++){
+				deck_.push_back(Card(rank, suit));
+			}
+		}
+  }
+}
+
+int PloState::CurrentPlayer() const {
+  if (IsTerminal()) {
+    return kTerminalPlayerId;
+  } else {
+    return cur_player_;
+  }
+}
+
+// In a chance node, `move` should be the card to deal to the current
+// underlying player.
+// On a player node, it should be ActionType::{kF, kX, kB, kC, kR}
+void PloState::DoApplyAction(Action move) {
+  if (IsChanceNode()) {
+    SPIEL_CHECK_GE(move, 0);
+    SPIEL_CHECK_LT(move, deck_.size());
+
+    SPIEL_CHECK_NE(deck_[move], kInvalidCard);
+
+    if (private_hole_dealt_ < num_players_) { //round 0 - preflop
+      SetPrivate(private_hole_dealt_, move); //since we can only pass Action move to DoApplyAction, we encode the 4 cards in move in base 52
+      // When all private cards are dealt, move to player 0 (the Button/Small Blind, who acts first preflop).
+      if (private_hole_dealt_ == num_players_) cur_player_ = 0;
+    } else if(round_==1){ //round 1 - flop, 3 cards
+      // Round 1: 3 public cards are revealed, again encoded in move using base 52
+      for(int i=0;i<3;i++){
+        public_cards_[i] = deck_[move%default_deck_size];
+        deck_[move%default_deck_size] = kInvalidCard;
+    	  deck_remaining_--;
+        move/=default_deck_size;
+      }
+      // We have finished the public card, let's bet!
+      cur_player_ = NextPlayer();
+    }
+  } else {
+    SequenceAppendMove(move);
+    //Here we encode the action in base 5. 1st digit is action type, 2nd digit is bet sizing (0 for kF, kX, kC, 0-2 for kB, 0-1 for kR)
+    int move_type = move%5;
+    int bet_size = move/5;
+    if (move_type == ActionType::kF) {
+      // Player is now out.
+      auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
+      players_remaining_.erase(it,it+1);
+      ResolveWinner(); //2 player game - when one folds, it ends;
+    } else if (move == ActionType::kC) {
+
+      // Current player puts in an amount of money equal to the current level
+      // (nbet) minus what they have contributed to level their contribution
+      // off. Note: this action also acts as a 'check' where the nbet are
+      // equal to each player's ante.
+      SPIEL_CHECK_GE(nbet_, ante_[cur_player_]);
+      int amount = nbet_ - ante_[cur_player_];
+      Ante(cur_player_, amount);
+      num_calls_++;
+
+      if (IsTerminal()) {
+        ResolveWinner();
+      } else if (ReadyForNextRound()) {
+        NewRound();
+      } else {
+        cur_player_ = NextPlayer();
+      }
+    } else if (move == ActionType::kR) {
+
+      // This player matches the current nbet and then brings the nbet up.
+      SPIEL_CHECK_LT(num_raises_, kMaxRaises);
+      int call_amount = nbet_ - ante_[cur_player_];
+
+      // First, match the current nbet if necessary
+      SPIEL_CHECK_GE(call_amount, 0);
+      if (call_amount > 0) {
+        Ante(cur_player_, call_amount);
+      }
+
+      // Now, raise the nbet.
+      int raise_amount = (round_ == 1 ? kFirstRaiseAmount : kSecondRaiseAmount);
+      nbet_ += raise_amount;
+      Ante(cur_player_, raise_amount);
+      num_raises_++;
+      num_calls_ = 0;
+
+      if (IsTerminal()) {
+        ResolveWinner();
+      } else {
+        cur_player_ = NextPlayer();
+      }
+    } else {
+      SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?",
+                                   IsChanceNode()));
+    }
+  }
+}
+
+std::vector<Action> PloState::LegalActions() const {
+  if (IsTerminal()) return {};
+  std::vector<Action> movelist;
+  if (IsChanceNode()) {
+    if (suit_isomorphism_) {
+      // Consecutive cards are identical under suit isomorphism.
+      for (int card = 0; card < deck_.size() / 2; card++) {
+        if (deck_[card * 2] != kInvalidCard ||
+            deck_[card * 2 + 1] != kInvalidCard) {
+          movelist.push_back(card);
+        }
+      }
+    } else {
+      for (int card = 0; card < deck_.size(); card++) {
+        if (deck_[card] != kInvalidCard) movelist.push_back(card);
+      }
+    }
+    return movelist;
+  }
+
+  if (action_mapping_) {
+    // All actions are regarded as legal
+    movelist.push_back(ActionType::kF);
+    movelist.push_back(ActionType::kC);
+    movelist.push_back(ActionType::kR);
+    return movelist;
+  }
+
+  // Can't just randomly fold; only allow fold when under pressure.
+  if (nbet_ > ante_[cur_player_]) {
+    movelist.push_back(ActionType::kF);
+  }
+
+  // Can always call/check
+  movelist.push_back(ActionType::kC);
+
+  if (num_raises_ < 2) {
+    movelist.push_back(ActionType::kR);
+  }
+
+  return movelist;
+}
+
+std::string PloState::ActionToString(Player player, Action move) const {
+  return GetGame()->ActionToString(player, move);
+}
+
+std::string PloState::ToString() const {
+  std::string result;
+
+  absl::StrAppend(&result, "Round: ", round_, "\nPlayer: ", cur_player_,
+                  "\nPot: ", pot_, "\nMoney (p1 p2 ...):");
+  for (auto p = Player{0}; p < num_players_; p++) {
+    absl::StrAppend(&result, " ", money_[p]);
+  }
+  absl::StrAppend(&result, "\nCards (public p1 p2 ...): ", public_card_, " ");
+  for (Player player_index = 0; player_index < num_players_; player_index++) {
+    absl::StrAppend(&result, private_hole_[player_index], " ");
+  }
+
+  absl::StrAppend(&result, "\nRound 0 sequence: ");
+  for (int i = 0; i < round0_sequence_.size(); ++i) {
+    Action action = round0_sequence_[i];
+    if (i > 0) absl::StrAppend(&result, ", ");
+    absl::StrAppend(&result, StatelessActionToString(action));
+  }
+  absl::StrAppend(&result, "\nRound 1 sequence: ");
+  for (int i = 0; i < round1_sequence_.size(); ++i) {
+    Action action = round1_sequence_[i];
+    if (i > 0) absl::StrAppend(&result, ", ");
+    absl::StrAppend(&result, StatelessActionToString(action));
+  }
+  absl::StrAppend(&result, "\n");
+
+  return result;
+}
+
+bool PloState::IsTerminal() const {
+  return remaining_players_ == 1 || (round_ == 2 && ReadyForNextRound());
+}
+
+std::vector<double> PloState::Returns() const {
+  if (!IsTerminal()) {
+    return std::vector<double>(num_players_, 0.0);
+  }
+
+  std::vector<double> returns(num_players_);
+  for (auto player = Player{0}; player < num_players_; ++player) {
+    // Money vs money at start.
+    returns[player] = money_[player] - kStartingMoney;
+  }
+
+  return returns;
+}
+
+// Information state is card then bets.
+std::string PloState::InformationStateString(Player player) const {
+  const PloGame& game = open_spiel::down_cast<const PloGame&>(*game_);
+  return game.info_state_observer_->StringFrom(*this, player);
+}
+
+// Observation is card then contribution of each players to the pot.
+std::string PloState::ObservationString(Player player) const {
+  const PloGame& game = open_spiel::down_cast<const PloGame&>(*game_);
+  return game.default_observer_->StringFrom(*this, player);
+}
+
+void PloState::InformationStateTensor(Player player,
+                                        absl::Span<float> values) const {
+  ContiguousAllocator allocator(values);
+  const PloGame& game = open_spiel::down_cast<const PloGame&>(*game_);
+  game.info_state_observer_->WriteTensor(*this, player, &allocator);
+}
+
+void PloState::ObservationTensor(Player player,
+                                   absl::Span<float> values) const {
+  ContiguousAllocator allocator(values);
+  const PloGame& game = open_spiel::down_cast<const PloGame&>(*game_);
+  game.default_observer_->WriteTensor(*this, player, &allocator);
+}
+
+std::unique_ptr<State> PloState::Clone() const {
+  return std::unique_ptr<State>(new PloState(*this));
+}
+
+std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
+  SPIEL_CHECK_TRUE(IsChanceNode());
+  std::vector<std::pair<Action, double>> outcomes;
+
+  if (suit_isomorphism_) {
+    const double p = 1.0 / deck_size_;
+    // Consecutive cards in deck are viewed identically.
+    for (int card = 0; card < deck_.size() / 2; card++) {
+      if (deck_[card * 2] != kInvalidCard &&
+          deck_[card * 2 + 1] != kInvalidCard) {
+        outcomes.push_back({card, p * 2});
+      } else if (deck_[card * 2] != kInvalidCard ||
+                 deck_[card * 2 + 1] != kInvalidCard) {
+        outcomes.push_back({card, p});
+      }
+    }
+    return outcomes;
+  }
+
+  const double p = 1.0 / deck_size_;
+  for (int card = 0; card < deck_.size(); card++) {
+    // This card is still in the deck, prob is 1/decksize.
+    if (deck_[card] != kInvalidCard) outcomes.push_back({card, p});
+  }
+  return outcomes;
+}
+
+int PloState::NextPlayer() const {
+  // If we are on a chance node, it is the first player to play
+  if((round_==0&&private_hole_dealt_<num_players_)||(round_==0&&action_is_closed)) {
+    return kChancePlayerId;
+  }
+  if(cur_player_==kChancePlayerId){
+    return (int)(round_>0); //trick: preflop (0) the button (0) acts first, postflop (1) the big blind (1) acts first;
+  }
+  auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
+  SpielCheckNE(it, players_remaining_.end());
+  if((++it)==players_remaining_.end()) it = players_remaining_.begin();
+  return *it;
+
+  SpielFatalError("Error in PloState::NextPlayer(), should not get here.");
+}
+
+HandScore PloState::GetScoreFrom5(std::vector<Card> cards) const {
+  std::sort(cards.begin(), cards.end());
+  bool flush = true;
+  bool straight = true;
+  bool ato5straight = false;
+  int trips = -1;
+  int pairs = 0;
+  int pair_ind = -1;
+  //check for straights and flushes
+  for(int i=0;i<5;i++){
+    if(cards[i].suit!=cards[0].suit) flush = false;
+    if(i>0&&cards[i].rank!=cards[i-1].rank+1) straight = false;
+    if(i>1&&cards[i].rank==cards[i-1].rank&&cards[i-1].rank==cards[i-2].rank) trips = i;
+    if(i>0&&cards[i].rank==cards[i-1].rank){
+      pairs++;
+      pair_ind = i;
+    }
+  }
+  //check for A-5 straight
+  if(cards[0].rank==0&&cards[1].rank==1&&cards[2].rank==2&&cards[3].rank==3&&cards[4].rank==12) ato5straight = true;
+  vector<int> hand_class(6, -1);
+  if((straight||ato5straight)&&flush){ // 9 = straight flush
+    hand_class[0] = 9;
+    if(straight) hand_class[1] = cards[4].rank;
+    else hand_class[1] = cards[3].rank; // in A to 5 straight, highest card is the 5
+  }else if(cards[0].rank==cards[3].rank||cards[1].rank==cards[4].rank){ //8 = four of a kind
+    hand_class[0] = 8;
+    hand_class[1] = cards[2].rank; // get the four of a kind card
+    //get the kicker
+    if(cards[0].rank==cards[3].rank) hand_class[2] = cards[4].rank;
+    else hand_class[2] = cards[0].rank;
+  }else if((cards[0].rank==cards[2].rank&&cards[3].rank==cards[4].rank)||(cards[0].rank==cards[1].rank&&cards[2].rank==cards[4].rank)){ // 7 = full house
+    hand_class[0] = 7;
+    hand_class[1] = cards[2].rank; // get the three of a kind card
+    //get the kicker (pair)
+    if(cards[0].rank==cards[2].rank&&cards[3].rank==cards[4].rank) hand_class[2] = cards[3].rank;
+    else hand_class[2] = cards[0].rank;
+  }else if(flush){ // 6 = flush
+    hand_class[0] = 6;
+    for(int i=4;i>=0;i--) hand_class[5-i] = cards[i].rank; // all cards could be necessary to dispute ties
+  }else if(straight||ato5straight){ // 5 = straight
+    hand_class[0] = 5;
+    if(straight) hand_class[1] = cards[4].rank;
+    else hand_class[1] = cards[3].rank; // in A to 5 straight, highest card is the 5
+  }else if(trips>=0){ // 4 = three of a kind
+    hand_class[0] = 4;
+    hand_class[1] = cards[trips].rank;
+    int ind_lo = (trips+1)%4, ind_hi = (trips+2)%5;
+    if(ind_lo>ind_hi) std::swap(ind_lo, ind_hi);
+    hand_class[2] = cards[ind_hi].rank;
+    hand_class[3] = cards[ind_lo].rank;
+  }else if(pairs>=2){ // 3 = two pairs
+    hand_class[0] = 3;
+    if(cards[0].rank==cards[1].rank){
+      if(cards[2].rank==cards[3].rank){
+        hand_class[1] = cards[3].rank; // hi pair
+        hand_class[2] = cards[1].rank; // lo pair
+        hand_class[3] = cards[4].rank; // kicker
+      }else{
+        hand_class[1] = cards[4].rank; // hi pair
+        hand_class[2] = cards[1].rank; // lo pair
+        hand_class[3] = cards[2].rank; // kicker
+      }
+    }else{
+      hand_class[1] = cards[4].rank; // hi pair
+      hand_class[2] = cards[2].rank; // lo pair
+      hand_class[3] = cards[0].rank; // kicker
+    }
+  }else if(pairs>0){ // 2 = one pair
+    hand_class[0] = 2;
+    hand_class[1] = cards[pair_ind].rank;
+    std::vector<int> other_inds = {(pair_ind+1)%5, (pair_ind+2)%5, (pair_ind+3)%5};
+    std::sort(other_inds.begin(), other_inds.end());
+    for(int i=0;i<3;i++) hand_class[2+i] = cards[other_inds[2-i]].rank;
+  }else{ // 1 = high card
+    hand_class[0] = 1;
+    for(int i=4;i>=0;i--) hand_class[5-i] = cards[i].rank; // all cards could be necessary to dispute ties
+  }
+  return HandScore(hand_class);
+}
+
+HandScore PloState::RankHand(Player player) const {
+  HandScore max_score{-1, -1, -1, -1, -1, -1};
+  for(int i=0;i<(int)public_cards_.size();i++){
+    for(int j=i+1;j<(int)public_cards_.size();j++){
+      for(int k=j+1;k<(int)public_cards_.size();k++){
+        for(int l=0;l<4;l++){
+          for(int m=l+1;m<4;m++){
+            max_score = max(max_score, GetScoreFrom5({private_hole_[player][l], private_hole_[player][m], public_cards_[i], public_cards_[j], public_cards_[k]}));
+          }
+        }
+      }
+    }
+  }
+  return max_score;
+}
+
+void PloState::ResolveWinner() {
+  num_winners_ = kInvalidPlayer;
+
+  if ((int)remaining_players_.size() == 1) {
+    winner_[remaining_players_[0]] = true;
+    num_winners_ = 1;
+    stack_[remaining_players_[0]] += pot_; // += (1-rake_)*pot_, if raked game
+    pot_ = 0;
+    return;
+  } else {
+    // Otherwise, showdown!
+    // Find the best hand among those still in.
+    std::vector<std::pair<HandScore, int>> scores;
+    for(int player:remaining_players_) scores.push_back({RankHand(player), player});
+    std::sort(scores.begin(), scores.end());
+    int j = (int)scores.size()-1;
+    num_winners_ = 0;
+    while(j>=0&&scores[j].first==scores.back().first){
+      winner_[scores[j].second] = true;
+      j--;
+      num_winners_++;
+    }
+    // Split the pot among the winners (possibly only one).
+    SPIEL_CHECK_TRUE(1 <= num_winners_ && num_winners_ <= num_players_);
+    for (Player player_index = 0; player_index < num_players_; player_index++) {
+      if (winner_[player_index]) {
+        // Give this player their share.
+        stack_[player_index] += static_cast<double>(pot_) / num_winners_;
+      }
+    }
+    pot_ = 0;
+  }
+}
+
+bool PloState::ReadyForNextRound() const {
+  return ((num_raises_ == 0 && num_calls_ == remaining_players_) ||
+          (num_raises_ > 0 && num_calls_ == (remaining_players_ - 1)));
+}
+
+void PloState::NewRound() {
+  SPIEL_CHECK_EQ(round_, 1);
+  round_++;
+  num_raises_ = 0;
+  num_calls_ = 0;
+  cur_player_ = kChancePlayerId;  // Public card.
+}
+
+void PloState::SequenceAppendMove(int move) {
+  if (round_ == 0) {
+    round0_sequence_.push_back(move);
+  } else {
+    round1_sequence_.push_back(move);
+  }
+}
+
+void PloState::Ante(Player player, int amount) {
+  pot_ += amount;
+  ante_[player] += amount;
+  money_[player] -= amount;
+}
+
+std::vector<int> PloState::padded_betting_sequence() const {
+  std::vector<int> history = round0_sequence_;
+
+  // We pad the history to the end of the first round with kPaddingAction.
+  history.resize(game_->MaxGameLength() / 2, kInvalidAction);
+
+  // We insert the actions that happened in the second round, and fill to
+  // MaxGameLength.
+  history.insert(history.end(), round1_sequence_.begin(),
+                 round1_sequence_.end());
+  history.resize(game_->MaxGameLength(), kInvalidAction);
+  return history;
+}
+
+void PloState::SetPrivate(Player player, Action move) {
+  // Round 1. `move` refers to the encoding of the 4 cards in base 52
+  // underlying player (given by `private_hole_dealt_`).
+	std::vector<Card> cards_to_give;
+	for(int i=0;i<4;i++){
+		cards_to_give.push_back(deck_[move%default_deck_size]);
+		deck_[move%default_deck_size] = kInvalidCard;
+		move/=default_deck_size;
+		--deck_remaining_;
+	}
+	private_hole_[player] = Hole(cards_to_give);
+  ++private_hole_dealt_;
+}
+
+std::unique_ptr<State> PloState::ResampleFromInfostate(
+    int player_id, std::function<double()> rng) const {
+  std::unique_ptr<State> clone = game_->NewInitialState();
+
+  // First, deal out cards:
+  Action player_chance = history_.at(player_id).action;
+  for (int p = 0; p < GetGame()->NumPlayers(); ++p) {
+    if (p == player_id) {
+      clone->ApplyAction(history_.at(p).action);
+    } else {
+      Action chosen_action = player_chance;
+      while (chosen_action == player_chance || chosen_action == public_card_) {
+        chosen_action = SampleAction(clone->ChanceOutcomes(), rng()).first;
+      }
+      clone->ApplyAction(chosen_action);
+    }
+  }
+  for (int action : round0_sequence_) clone->ApplyAction(action);
+  if (public_card_ != kInvalidCard) {
+    clone->ApplyAction(public_card_);
+    for (int action : round1_sequence_) clone->ApplyAction(action);
+  }
+  return clone;
+}
+
+int PloState::NumObservableCards() const {
+  return suit_isomorphism_ ? deck_.size() / 2 : deck_.size();
+}
+
+int PloState::MaxBetsPerRound() const { return 3 * num_players_ - 2; }
+
+void PloState::SetPrivateCards(const std::vector<int>& new_private_hole) {
+  SPIEL_CHECK_EQ(new_private_hole.size(), NumPlayers());
+  private_hole_ = new_private_hole;
+}
+
+PloGame::PloGame(const GameParameters& params)
+    : Game(kGameType, params),
+      num_players_(ParameterValue<int>("players")),
+      total_cards_((num_players_ + 1) * kNumSuits),
+      action_mapping_(ParameterValue<bool>("action_mapping")),
+      suit_isomorphism_(ParameterValue<bool>("suit_isomorphism")) {
+  SPIEL_CHECK_GE(num_players_, kGameType.min_num_players);
+  SPIEL_CHECK_LE(num_players_, kGameType.max_num_players);
+  default_observer_ = std::make_shared<PloObserver>(kDefaultObsType);
+  info_state_observer_ = std::make_shared<PloObserver>(kInfoStateObsType);
+}
+
+std::unique_ptr<State> PloGame::NewInitialState() const {
+  return absl::make_unique<PloState>(shared_from_this(),
+                                       /*action_mapping=*/action_mapping_,
+                                       /*suit_isomorphism=*/suit_isomorphism_);
+}
+
+int PloGame::MaxChanceOutcomes() const {
+  if (suit_isomorphism_) {
+    return total_cards_ / 2;
+  } else {
+    return total_cards_;
+  }
+}
+
+std::vector<int> PloGame::InformationStateTensorShape() const {
+  // One-hot encoding for player number (who is to play).
+  // 2 slots of cards (total_cards_ bits each): private card, public card
+  // Followed by maximum game length * 2 bits each (call / raise)
+  if (suit_isomorphism_) {
+    return {(num_players_) + (total_cards_) + (MaxGameLength() * 2)};
+  } else {
+    return {(num_players_) + (total_cards_ * 2) + (MaxGameLength() * 2)};
+  }
+}
+
+std::vector<int> PloGame::ObservationTensorShape() const {
+  // One-hot encoding for player number (who is to play).
+  // 2 slots of cards (total_cards_ bits each): private card, public card
+  // Followed by the contribution of each player to the pot
+  if (suit_isomorphism_) {
+    return {(num_players_) + (total_cards_) + (num_players_)};
+  } else {
+    return {(num_players_) + (total_cards_ * 2) + (num_players_)};
+  }
+}
+
+double PloGame::MaxUtility() const {
+  // In poker, the utility is defined as the money a player has at the end of
+  // the game minus then money the player had before starting the game.
+  // The most a player can win *per opponent* is the most each player can put
+  // into the pot, which is the raise amounts on each round times the maximum
+  // number raises, plus the original chip they put in to play.
+  return (num_players_ - 1) * (kTotalRaisesPerRound * kFirstRaiseAmount +
+                               kTotalRaisesPerRound * kSecondRaiseAmount + 1);
+}
+
+double PloGame::MinUtility() const {
+  // In poker, the utility is defined as the money a player has at the end of
+  // the game minus then money the player had before starting the game.
+  // The most any single player can lose is the maximum number of raises per
+  // round times the amounts of each of the raises, plus the original chip
+  // they put in to play.
+  return -1 * (kTotalRaisesPerRound * kFirstRaiseAmount +
+               kTotalRaisesPerRound * kSecondRaiseAmount + 1);
+}
+
+std::shared_ptr<Observer> PloGame::MakeObserver(
+    absl::optional<IIGObservationType> iig_obs_type,
+    const GameParameters& params) const {
+  if (params.empty()) {
+    return std::make_shared<PloObserver>(
+        iig_obs_type.value_or(kDefaultObsType));
+  } else {
+    return MakeRegisteredObserver(iig_obs_type, params);
+  }
+}
+
+std::string PloGame::ActionToString(Player player, Action action) const {
+  if (player == kChancePlayerId) {
+    return absl::StrCat("Chance outcome:", action);
+  } else {
+    return StatelessActionToString(action);
+  }
+}
+
+}  // namespace plo
+}  // namespace open_spiel
