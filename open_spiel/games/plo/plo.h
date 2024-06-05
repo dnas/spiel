@@ -207,10 +207,11 @@ class PloState : public State {
   int NextPlayer() const;
   void ResolveWinner();
   void NewRound();
-  int RankHand(Player player) const;
   void SequenceAppendMove(int move);
   void Ante(Player player, int amount);
   void SetPrivate(Player player, Action move);
+  HandScore GetScoreFrom5(std::vector<Card> cards) const;
+  HandScore RankHand(Player player) const;
 
   // Fields sets to bad/invalid values. Use Game::NewInitialState().
   Player cur_player_;
@@ -280,7 +281,6 @@ class PloGame : public Game {
 
  private:
   int num_players_;  // Number of players.
-  int total_cards_;  // Number of cards total cards in the game.
   // Players cannot distinguish between cards of different suits with the same
   // rank.
   bool suit_isomorphism_;
