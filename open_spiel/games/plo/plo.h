@@ -206,7 +206,6 @@ class PloState : public State {
 
   int NextPlayer() const;
   void ResolveWinner();
-  bool ReadyForNextRound() const;
   void NewRound();
   int RankHand(Player player) const;
   void SequenceAppendMove(int move);
@@ -217,14 +216,16 @@ class PloState : public State {
   Player cur_player_;
 
   int round_;        // Round number (1 or 2).
-  int nbet_;       // The current 'level' of the bet.
   int num_winners_;  // Number of winning players.
   int pot_;          // Number of chips in the pot AT THE START OF THE CURRENT ROUND
   std::vector<Card> public_cards_;  // The public card revealed after round 1.
   int deck_remaining_;    // Number of cards remaining; not equal deck_.size()
   int private_hole_dealt_;  // How many private cards currently dealt.
-  bool action_is_closed_; //Whether the betting has finished in the current round.
   std::vector<int> players_remaining_;    // Num. players still in (not folded). 0=sb/button heads-up
+  std::vector<double> cur_round_bet_; //In the current round of betting, how much each player has bet so far
+  double cur_max_bet_; //Max in cur_round_bet_
+  bool action_is_closed_; //Whether the action for the current round has closed
+  int last_to_act_; //Index of the last player who can act (BB preflop, BU postflop)
 
   // Is this player a winner? Indexed by pid.
   std::vector<bool> winner_;
@@ -236,7 +237,7 @@ class PloState : public State {
   // How much money each player has, indexed by pid.
   std::vector<double> stack_;
   // How much each player has contributed to the pot, indexed by pid.
-  std::vector<int> ante_;
+  std::vector<double> ante_;
   // Sequence of actions for each round. Needed to report information state.
   std::vector<int> round0_sequence_;
   std::vector<int> round1_sequence_;

@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 #include "open_spiel/games/plo/plo.h"
 
 #include <algorithm>
@@ -30,6 +29,8 @@
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
+
+#define EPS 0.01
 
 namespace open_spiel {
 namespace plo {
@@ -248,10 +249,11 @@ PloState::PloState(std::shared_ptr<const Game> game,
     : State(game),
       cur_player_(kChancePlayerId),
       round_(0),   // Round number (0 or 1 - preflop or postflop).
-      nbet_(0),  // The current 'level' of the bet.
       num_winners_(-1),
       pot_(0),  // Number of chips in the pot.
       action_is_closed_(false),
+      last_to_act_(1),
+      cur_max_bet_(kBlinds[1]),
       public_cards_(3, kInvalidCard),
       // Number of cards remaining; not equal deck_.size()!
       deck_remaining_(default_deck_size),
@@ -265,6 +267,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
       stack_(game->NumPlayers()),
       // How much each player has contributed to the pot, indexed by pid.
       ante_(game->NumPlayers()),
+      cur_round_bet_(game->NumPlayers(), 0.0),
       // Sequence of actions for each round. Needed to report information
       // state.
       round0_sequence_(),
@@ -279,6 +282,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
 	for(int p = 0;p<game->NumPlayers();p++){
 		stack_[p] = kDefaultStacks-kBlinds[p];
 		ante_[p] = kBlinds[p];
+    cur_round_bet_[p] = kBlinds[p];
 	}
 	deck_.clear();
   if(default_deck_size==52){ //In normal conditions, add the 52 cards to the deck, consisting of ranks 0-12 (Deuce to Ace) and suits 0-3
@@ -331,57 +335,80 @@ void PloState::DoApplyAction(Action move) {
     }
   } else {
     SequenceAppendMove(move);
-    //Here we encode the action in base 5. 1st digit is action type, 2nd digit is bet sizing (0 for kF, kX, kC, 0-2 for kB, 0-1 for kR)
+    //Here we encode the action in base 5. 1st digit is action type, 2nd digit is bet sizing index (0 for kF, kX, kC, 0-2 for kB, 0-1 for kR)
     int move_type = move%5;
-    int bet_size = move/5;
-    if (move_type == ActionType::kF) {
+    int bet_ind = move/5;
+    if(move_type == ActionType::kF){
       // Player is now out.
+      SPIEL_CHECK_LT(cur_round_bet_[cur_player_], cur_max_bet_);
       auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
+      SPIEL_CHECK_NE(it, players_remaining_.end());
       players_remaining_.erase(it,it+1);
+      action_is_closed_ = true;
       ResolveWinner(); //2 player game - when one folds, it ends;
-    } else if (move == ActionType::kC) {
-
-      // Current player puts in an amount of money equal to the current level
-      // (nbet) minus what they have contributed to level their contribution
-      // off. Note: this action also acts as a 'check' where the nbet are
-      // equal to each player's ante.
-      SPIEL_CHECK_GE(nbet_, ante_[cur_player_]);
-      int amount = nbet_ - ante_[cur_player_];
-      Ante(cur_player_, amount);
-      num_calls_++;
-
-      if (IsTerminal()) {
-        ResolveWinner();
-      } else if (ReadyForNextRound()) {
+    }else if(move_type==ActionType::kX){ //checking - just move the game along
+      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, 0, EPS);
+      if(round_==0){
+        SPIEL_CHECK_NE(cur_player_, 0); //The button cannot check preflop
+        //This means the button called and the big blind checked their option
+        action_is_closed_ = true;
         NewRound();
-      } else {
-        cur_player_ = NextPlayer();
+      }else if(round_==1){
+        if(cur_player_!=last_to_act_) cur_player_ = NextPlayer();
+        else{
+          action_is_closed_ = true;
+          ResolveWinner();
+        }
       }
-    } else if (move == ActionType::kR) {
+      SpielFatalError("Other rounds not implemented yet");
+    }else if(move_type == ActionType::kC){
+      SPIEL_CHECK_GE(cur_max_bet_, cur_round_bet_[cur_player_]);
+      double to_call = cur_max_bet_-cur_round_bet_[cur_player_];
+      SPIEL_CHECK_GE(stack_[cur_player_], to_call);
+      stack_[cur_player] -= to_call;
+      ante_[cur_player] += to_call;
+      cur_round_bet_[cur_player] += to_call;
+      pot_ += to_call;
+      action_is_closed_ = true;
 
-      // This player matches the current nbet and then brings the nbet up.
-      SPIEL_CHECK_LT(num_raises_, kMaxRaises);
-      int call_amount = nbet_ - ante_[cur_player_];
-
-      // First, match the current nbet if necessary
-      SPIEL_CHECK_GE(call_amount, 0);
-      if (call_amount > 0) {
-        Ante(cur_player_, call_amount);
+      if (IsTerminal()) { //aka last round
+        ResolveWinner();
+      }else{ //if not, action is closed so start new round
+        NewRound();
       }
-
-      // Now, raise the nbet.
-      int raise_amount = (round_ == 1 ? kFirstRaiseAmount : kSecondRaiseAmount);
-      nbet_ += raise_amount;
-      Ante(cur_player_, raise_amount);
-      num_raises_++;
-      num_calls_ = 0;
+    }else if(move_type == ActionType::kB){
+      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, 0, EPS);
+      double to_bet = bet_sizes[bet_ind]*pot_;
+      to_bet = min(to_bet, stack_[cur_player]);
+      stack_[cur_player] -= to_bet;
+      ante_[cur_player] += to_bet;
+      cur_max_bet_ = to_bet;
+      cur_round_bet_[cur_player_] += to_bet;
+      pot_ += to_bet;
 
       if (IsTerminal()) {
+        SpielFatalError("Cannot be terminal after a bet");
         ResolveWinner();
       } else {
         cur_player_ = NextPlayer();
       }
-    } else {
+    }else if(move_type==ActionType::kR){
+      SPIEL_CHECK_GE(cur_max_bet_, cur_round_bet_[cur_player_]);
+      double to_raise = cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[bet_ind]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]);
+      to_raise = min(to_raise, stack_[cur_player_]);
+      stack_[cur_player] -= to_raise;
+      ante_[cur_player] += to_raise;
+      cur_round_bet_[cur_player_] += to_bet;
+      cur_max_bet_ = cur_round_bet_[cur_player_];
+      pot_ += to_raise;
+
+      if (IsTerminal()) {
+        SpielFatalError("Cannot be terminal after a raise");
+        ResolveWinner();
+      } else {
+        cur_player_ = NextPlayer();
+      }
+    }else {
       SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?",
                                    IsChanceNode()));
     }
@@ -466,7 +493,7 @@ std::string PloState::ToString() const {
 }
 
 bool PloState::IsTerminal() const {
-  return remaining_players_ == 1 || (round_ == 2 && ReadyForNextRound());
+  return remaining_players_ == 1 || (round_ == 1 && action_is_closed_);
 }
 
 std::vector<double> PloState::Returns() const {
@@ -542,18 +569,16 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
 
 int PloState::NextPlayer() const {
   // If we are on a chance node, it is the first player to play
-  if((round_==0&&private_hole_dealt_<num_players_)||(round_==0&&action_is_closed)) {
+  if((round_==0&&private_hole_dealt_<num_players_)||(round_==0&&action_is_closed_)) {
     return kChancePlayerId;
   }
   if(cur_player_==kChancePlayerId){
     return (int)(round_>0); //trick: preflop (0) the button (0) acts first, postflop (1) the big blind (1) acts first;
   }
   auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
-  SpielCheckNE(it, players_remaining_.end());
+  SPIEL_CHECK_NE(it, players_remaining_.end());
   if((++it)==players_remaining_.end()) it = players_remaining_.begin();
   return *it;
-
-  SpielFatalError("Error in PloState::NextPlayer(), should not get here.");
 }
 
 HandScore PloState::GetScoreFrom5(std::vector<Card> cards) const {
@@ -650,6 +675,7 @@ HandScore PloState::RankHand(Player player) const {
       }
     }
   }
+  SPIEL_CHECK_NE(max_score.score[0], -1);
   return max_score;
 }
 
@@ -687,17 +713,13 @@ void PloState::ResolveWinner() {
   }
 }
 
-bool PloState::ReadyForNextRound() const {
-  return ((num_raises_ == 0 && num_calls_ == remaining_players_) ||
-          (num_raises_ > 0 && num_calls_ == (remaining_players_ - 1)));
-}
-
 void PloState::NewRound() {
-  SPIEL_CHECK_EQ(round_, 1);
   round_++;
-  num_raises_ = 0;
-  num_calls_ = 0;
-  cur_player_ = kChancePlayerId;  // Public card.
+  cur_player_ = kChancePlayerId;
+  last_to_act+ = 0;
+  cur_max_bet_ = 0;
+  action_is_closed_ = false;
+  std::fill(cur_round_bet_.begin(), cur_round_bet_.end(), 0);
 }
 
 void PloState::SequenceAppendMove(int move) {
@@ -706,12 +728,6 @@ void PloState::SequenceAppendMove(int move) {
   } else {
     round1_sequence_.push_back(move);
   }
-}
-
-void PloState::Ante(Player player, int amount) {
-  pot_ += amount;
-  ante_[player] += amount;
-  money_[player] -= amount;
 }
 
 std::vector<int> PloState::padded_betting_sequence() const {
