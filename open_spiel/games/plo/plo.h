@@ -74,6 +74,11 @@ class Card{
 		std::string ToString() const{
 			return std::to_string(rank)+"-"+std::to_string(suit);
 		}
+
+    friend std::ostream& operator<< (std::ostream& stream, const Card& card) {
+      stream << card.ToString();
+      return stream;
+    }
 };
 
 class Hole{
@@ -92,7 +97,7 @@ class Hole{
 			return !(*this==hole2);
     }
 		std::string ToString() const{
-			return "["+cards[0].ToString()+", "+cards[1].ToString()+", "+cards[2].ToString()+", "+cards[3].ToString()+"]";
+			return "["+cards[0].ToString()+","+cards[1].ToString()+","+cards[2].ToString()+","+cards[3].ToString()+"]";
 		}
 		void sort(){
 			std::sort(cards.begin(), cards.end());

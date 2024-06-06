@@ -342,7 +342,7 @@ void PloState::DoApplyAction(Action move) {
     if(move_type == ActionType::kF){
       // Player is now out.
       auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
-      SPIEL_CHECK_NE(it, players_remaining_.end());
+      if(it == players_remaining_.end()) SpielFatalError("Couldn't find current player in DoApplyAction.");
       players_remaining_.erase(it,it+1);
       action_is_closed_ = true;
       ResolveWinner(); //2 player game - when one folds, it ends;
@@ -486,9 +486,9 @@ std::string PloState::ToString() const {
   for (auto p = Player{0}; p < num_players_; p++) {
     absl::StrAppend(&result, " ", stack_[p]);
   }
-  absl::StrAppend(&result, "\nCards (public p1 p2 ...): ", public_card_, " ");
+  absl::StrAppend(&result, "\nCards (public p1 p2 ...): ", public_cards_[0].ToString(), " ", public_cards_[1].ToString(), " ", public_cards_[2].ToString(), " ");
   for (Player player_index = 0; player_index < num_players_; player_index++) {
-    absl::StrAppend(&result, private_hole_[player_index], " ");
+    absl::StrAppend(&result, private_hole_[player_index].ToString(), " ");
   }
 
   absl::StrAppend(&result, "\nRound 0 sequence: ");
@@ -601,7 +601,7 @@ int PloState::NextPlayer() const {
     return (int)(round_>0); //trick: preflop (0) the button (0) acts first, postflop (1) the big blind (1) acts first;
   }
   auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
-  SPIEL_CHECK_NE(it, players_remaining_.end());
+  if(it == players_remaining_.end()) SpielFatalError("Could not find player in NextPlayer.");
   if((++it)==players_remaining_.end()) it = players_remaining_.begin();
   return *it;
 }
@@ -794,27 +794,27 @@ std::unique_ptr<State> PloState::ResampleFromInfostate(
       clone->ApplyAction(history_.at(p).action);
     } else {
       Action chosen_action = player_chance;
-      while (chosen_action == player_chance || chosen_action == public_card_) {
+      while (chosen_action == player_chance || std::vector<Card>{deck_[chosen_action%default_deck_size], deck_[(chosen_action/default_deck_size)%default_deck_size], deck_[(chosen_action/default_deck_size/default_deck_size)%default_deck_size]} == public_cards_) {
         chosen_action = SampleAction(clone->ChanceOutcomes(), rng()).first;
       }
       clone->ApplyAction(chosen_action);
     }
   }
   for (int action : round0_sequence_) clone->ApplyAction(action);
-  if (public_card_ != kInvalidCard) {
-    clone->ApplyAction(public_card_);
+  if (public_cards_[0] != kInvalidCard && public_cards_[1] != kInvalidCard && public_cards_[2] != kInvalidCard) {
+    int ind1, ind2, ind0;
+    for(int i=0;i<(int)deck_.size();i++){
+      if(deck_[i]==public_cards_[0]) ind0 = i;
+      if(deck_[i]==public_cards_[1]) ind1 = i;
+      if(deck_[i]==public_cards_[2]) ind2 = i;
+    }
+    clone->ApplyAction(ind0+ind1*default_deck_size+ind2*default_deck_size*default_deck_size);
     for (int action : round1_sequence_) clone->ApplyAction(action);
   }
   return clone;
 }
 
-int PloState::NumObservableCards() const {
-  return suit_isomorphism_ ? deck_.size() / 4 : deck_.size();
-}
-
-int PloState::MaxBetsPerRound() const { return 10000; }
-
-void PloState::SetPrivateCards(const std::vector<int>& new_private_hole) {
+void PloState::SetPrivateCards(const std::vector<Hole>& new_private_hole) {
   SPIEL_CHECK_EQ(new_private_hole.size(), NumPlayers());
   private_hole_ = new_private_hole;
 }
@@ -822,7 +822,8 @@ void PloState::SetPrivateCards(const std::vector<int>& new_private_hole) {
 PloGame::PloGame(const GameParameters& params)
     : Game(kGameType, params),
       num_players_(ParameterValue<int>("players")),
-      suit_isomorphism_(ParameterValue<bool>("suit_isomorphism")) {
+      suit_isomorphism_(ParameterValue<bool>("suit_isomorphism")),
+      game_abstraction_(ParameterValue<bool>("game_abstraction")) {
   SPIEL_CHECK_GE(num_players_, kGameType.min_num_players);
   SPIEL_CHECK_LE(num_players_, kGameType.max_num_players);
   default_observer_ = std::make_shared<PloObserver>(kDefaultObsType);
@@ -831,8 +832,8 @@ PloGame::PloGame(const GameParameters& params)
 
 std::unique_ptr<State> PloGame::NewInitialState() const {
   return absl::make_unique<PloState>(shared_from_this(),
-                                       /*action_mapping=*/action_mapping_,
-                                       /*suit_isomorphism=*/suit_isomorphism_);
+                                       /*suit_isomorphism=*/suit_isomorphism_,
+                                       /*game_abstraction=*/game_abstraction_);
 }
 
 int PloGame::MaxChanceOutcomes() const {
@@ -848,9 +849,9 @@ std::vector<int> PloGame::InformationStateTensorShape() const {
   // 2 slots of cards (PLACEHOLDER bits each): private card, public card
   // Followed by maximum game length * 2 bits each (call / raise)
   if (suit_isomorphism_) {
-    return {(num_players_) + (PLACEHOLDER) + (MaxGameLength() * 2)};
+    return {(num_players_) + (PLACEHOLDER) + (100 * 2)};
   } else {
-    return {(num_players_) + (PLACEHOLDER * 2) + (MaxGameLength() * 2)};
+    return {(num_players_) + (PLACEHOLDER * 2) + (100 * 2)};
   }
 }
 
