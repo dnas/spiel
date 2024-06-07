@@ -175,7 +175,7 @@ class PloState : public State {
   std::vector<Card> GetPublicCards() const { return public_cards_; }
 
   // Gets number of chips in pot.
-  int GetPot() const { return pot_; }
+  double GetPot() const { return pot_; }
 
   // Gets how much stack each player has.
   std::vector<double> GetStack() const { return stack_; }
@@ -223,7 +223,7 @@ class PloState : public State {
 
   int round_;        // Round number (1 or 2).
   int num_winners_;  // Number of winning players.
-  int pot_;          // Number of chips in the pot AT THE START OF THE CURRENT ROUND
+  double pot_;          // Number of chips in the pot
   std::vector<Card> public_cards_;  // The public card revealed after round 1.
   int deck_remaining_;    // Number of cards remaining; not equal deck_.size()
   int private_hole_dealt_;  // How many private cards currently dealt.

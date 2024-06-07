@@ -244,6 +244,7 @@ void CFRSolverBase::InitializeInfostateNodes(const State& state) {
 
   int current_player = state.CurrentPlayer();
   std::string info_state = state.InformationStateString(current_player);
+  //std::cout << info_state << std::endl;
   std::vector<Action> legal_actions = state.LegalActions();
 
   if (random_initial_regrets_) {

@@ -228,8 +228,8 @@ class PloObserver : public Observer {
       if (iig_obs_type_.perfect_recall) {
         // Betting Sequence (for the perfect recall case)
         absl::StrAppend(
-            &result, "[Round1: ", absl::StrJoin(state.round0_sequence_, " "),
-            "][Round2: ", absl::StrJoin(state.round1_sequence_, " "), "]");
+            &result, "[Round0: ", absl::StrJoin(state.round0_sequence_, " "),
+            "][Round1: ", absl::StrJoin(state.round1_sequence_, " "), "]");
       } else {
         // Pot contributions (imperfect recall)
         absl::StrAppend(&result, "[Ante: ", absl::StrJoin(state.ante_, " "),
@@ -251,7 +251,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
       cur_player_(kChancePlayerId),
       round_(0),   // Round number (0 or 1 - preflop or postflop).
       num_winners_(-1),
-      pot_(0),  // Number of chips in the pot.
+      pot_(1.5),  // Number of chips in the pot.
       action_is_closed_(false),
       last_to_act_(1),
       cur_max_bet_(kBlinds[1]),
@@ -313,11 +313,11 @@ int PloState::CurrentPlayer() const {
 // underlying player.
 // On a player node, it should be ActionType::{kF, kX, kB, kC, kR}
 void PloState::DoApplyAction(Action move) {
+  //std::cout << "-----------------------------------------------------------------" << std::endl;
+  //std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
   if (IsChanceNode()) {
     SPIEL_CHECK_GE(move, 0);
-    SPIEL_CHECK_LT(move, deck_.size());
-
-    SPIEL_CHECK_NE(deck_[move], kInvalidCard);
+    SPIEL_CHECK_LT(move, default_deck_size*default_deck_size*default_deck_size*default_deck_size);
 
     if (private_hole_dealt_ < num_players_) { //round 0 - preflop
       SetPrivate(private_hole_dealt_, move); //since we can only pass Action move to DoApplyAction, we encode the 4 cards in move in base 52
@@ -343,11 +343,11 @@ void PloState::DoApplyAction(Action move) {
       // Player is now out.
       auto it = std::lower_bound(players_remaining_.begin(), players_remaining_.end(), cur_player_);
       if(it == players_remaining_.end()) SpielFatalError("Couldn't find current player in DoApplyAction.");
-      players_remaining_.erase(it,it+1);
+      players_remaining_.erase(it);
       action_is_closed_ = true;
       ResolveWinner(); //2 player game - when one folds, it ends;
     }else if(move_type==ActionType::kX){ //checking - just move the game along
-      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, 0, EPS);
+      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, cur_round_bet_[cur_player_], EPS);
       if(round_==0){
         SPIEL_CHECK_NE(cur_player_, 0); //The button cannot check preflop
         //This means the button called and the big blind checked their option
@@ -359,22 +359,24 @@ void PloState::DoApplyAction(Action move) {
           action_is_closed_ = true;
           ResolveWinner();
         }
-      }
-      SpielFatalError("Other rounds not implemented yet");
+      } else SpielFatalError("Other rounds not implemented yet");
     }else if(move_type == ActionType::kC){
-      SPIEL_CHECK_GE(cur_max_bet_, cur_round_bet_[cur_player_]);
+      SPIEL_CHECK_GE(cur_max_bet_+EPS, cur_round_bet_[cur_player_]);
       double to_call = cur_max_bet_-cur_round_bet_[cur_player_];
-      SPIEL_CHECK_GE(stack_[cur_player_], to_call);
+      SPIEL_CHECK_GE(stack_[cur_player_]+EPS, to_call);
       stack_[cur_player_] -= to_call;
       ante_[cur_player_] += to_call;
       cur_round_bet_[cur_player_] += to_call;
       pot_ += to_call;
       action_is_closed_ = true;
+      if(round_==0&&cur_player_==0) action_is_closed_ = false;
 
       if (IsTerminal()) { //aka last round
         ResolveWinner();
-      }else{ //if not, action is closed so start new round
+      }else if(action_is_closed_){ //if not, action is closed so start new round
         NewRound();
+      }else{
+        cur_player_ = NextPlayer();
       }
     }else if(move_type == ActionType::kB){
       SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, 0, EPS);
@@ -411,6 +413,7 @@ void PloState::DoApplyAction(Action move) {
       SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
     }
   }
+  //std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
 }
 
 std::vector<Action> PloState::LegalActions() const {
@@ -518,11 +521,13 @@ std::vector<double> PloState::Returns() const {
   }
 
   std::vector<double> returns(num_players_);
+  //std::cout << "Returns: [";
   for (auto player = Player{0}; player < num_players_; ++player) {
     // Money vs money at start.
     returns[player] = stack_[player] - kDefaultStacks;
+    //std::cout << returns[player] << (player==num_players_-1?"]":", ");
   }
-
+  //std::cout<<std::endl;
   return returns;
 }
 

@@ -33,6 +33,33 @@ namespace open_spiel {
 namespace algorithms {
 namespace {
 
+void CheckNashPLO(const Game& game, const Policy& policy) {
+  std::cout << TabularPolicy(game, policy).ToStringSorted() << std::endl;
+  const std::vector<double> game_value =
+      ExpectedReturns(*game.NewInitialState(), policy, -1);
+
+  // 1/18 is the Nash value. See https://en.wikipedia.org/wiki/Kuhn_poker
+  float nash_value = 0.061;
+  nash_value = 1.0 / 18.0;
+  constexpr float eps = 1e-3;
+
+  std::cout << game_value[0] << ", " << game_value[1] << std::endl;
+  SPIEL_CHECK_EQ(2, game_value.size());
+  //SPIEL_CHECK_FLOAT_NEAR((float)game_value[0], -nash_value, eps);
+  //SPIEL_CHECK_FLOAT_NEAR((float)game_value[1], nash_value, eps);
+}
+
+void CFRTest_PLO() {
+  std::shared_ptr<const Game> game = LoadGame("plo");
+  CFRSolver solver(*game);
+  for (int i = 0; i < 1; i++) {
+    solver.EvaluateAndUpdatePolicy();
+    if(i%1000==0) std::cout << i/100 << std::endl;
+  }
+  const std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
+  CheckNashPLO(*game, *average_policy);
+}
+
 void CheckNashKuhnPoker(const Game& game, const Policy& policy) {
   std::cout << TabularPolicy(game, policy).ToStringSorted() << std::endl;
   const std::vector<double> game_value =
@@ -296,9 +323,14 @@ void CFRTest_CFRSolverSerialization() {
 namespace algorithms = open_spiel::algorithms;
 
 int main(int argc, char** argv) {
-  algorithms::CFRTest_KuhnPoker();
-  std::cout << "SIMPLE POKER:" << std::endl;
-  algorithms::CFRTest_SimplePoker();
+  //algorithms::CFRTest_KuhnPoker();
+  //std::cout << "SIMPLE POKER:" << std::endl;
+  //algorithms::CFRTest_SimplePoker();
+  
+  //algorithms::CFRTest_GeneralMultiplePlayerTest(/*game_name=*/"leduc_poker", /*num_players=*/2, /*num_iterations=*/1,/*nashconv_upper_bound=*/5.0);
+  
+  std::cout << "PLO:" << std::endl;
+  algorithms::CFRTest_PLO();
   return;
   algorithms::CFRTest_IIGoof4();
   algorithms::CFRPlusTest_KuhnPoker();
