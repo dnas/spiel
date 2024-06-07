@@ -369,7 +369,7 @@ void PloState::DoApplyAction(Action move) {
       cur_round_bet_[cur_player_] += to_call;
       pot_ += to_call;
       action_is_closed_ = true;
-      if(round_==0&&cur_player_==0) action_is_closed_ = false;
+      if(round_==0&&cur_player_==0&&cur_max_bet_<=1.0+EPS) action_is_closed_ = false;
 
       if (IsTerminal()) { //aka last round
         ResolveWinner();
