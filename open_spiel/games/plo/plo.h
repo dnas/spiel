@@ -128,7 +128,7 @@ inline const Card kInvalidCard{-10000, -10000};
 inline const Hole kInvalidHole{kInvalidCard, kInvalidCard, kInvalidCard, kInvalidCard};
 inline constexpr int kDefaultPlayers = 2;
 inline constexpr int kNumSuits = 4;
-inline constexpr double kDefaultStacks = 100;
+inline constexpr int kDefaultStacks = 1000;
 inline constexpr int default_deck_size = 26;
 inline const std::vector<double> bet_sizes = {0.33, 0.66, 1};
 inline const std::vector<double> raise_sizes = {0.33, 1};
@@ -175,10 +175,10 @@ class PloState : public State {
   std::vector<Card> GetPublicCards() const { return public_cards_; }
 
   // Gets number of chips in pot.
-  double GetPot() const { return pot_; }
+  int GetPot() const { return pot_; }
 
   // Gets how much stack each player has.
-  std::vector<double> GetStack() const { return stack_; }
+  std::vector<int> GetStack() const { return stack_; }
 
   // Gets the action sequence of rounds 1 & 2.
   std::vector<int> GetRound0() const { return round0_sequence_; }
@@ -223,13 +223,13 @@ class PloState : public State {
 
   int round_;        // Round number (1 or 2).
   int num_winners_;  // Number of winning players.
-  double pot_;          // Number of chips in the pot
+  int pot_;          // Number of chips in the pot
   std::vector<Card> public_cards_;  // The public card revealed after round 1.
   int deck_remaining_;    // Number of cards remaining; not equal deck_.size()
   int private_hole_dealt_;  // How many private cards currently dealt.
   std::vector<int> players_remaining_;    // Num. players still in (not folded). 0=sb/button heads-up
-  std::vector<double> cur_round_bet_; //In the current round of betting, how much each player has bet so far
-  double cur_max_bet_; //Max in cur_round_bet_
+  std::vector<int> cur_round_bet_; //In the current round of betting, how much each player has bet so far
+  int cur_max_bet_; //Max in cur_round_bet_
   bool action_is_closed_; //Whether the action for the current round has closed
   int last_to_act_; //Index of the last player who can act (BB preflop, BU postflop)
 
@@ -241,9 +241,9 @@ class PloState : public State {
   // deck.)
   std::vector<Card> deck_;
   // How much money each player has, indexed by pid.
-  std::vector<double> stack_;
+  std::vector<int> stack_;
   // How much each player has contributed to the pot, indexed by pid.
-  std::vector<double> ante_;
+  std::vector<int> ante_;
   // Sequence of actions for each round. Needed to report information state.
   std::vector<int> round0_sequence_;
   std::vector<int> round1_sequence_;

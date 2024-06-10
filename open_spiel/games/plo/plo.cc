@@ -37,7 +37,7 @@ namespace open_spiel {
 namespace plo {
 namespace {
 
-std::vector<double> kBlinds = {0.5, 1}; //Button and Big Blind. The button acts first pre-flop, the BB acts first post-flop
+std::vector<int> kBlinds = {5, 10}; //Button and Big Blind. The button acts first pre-flop, the BB acts first post-flop
 
 const GameType kGameType{/*short_name=*/"plo",
                          /*long_name=*/"Pot Limit Omaha",
@@ -251,7 +251,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
       cur_player_(kChancePlayerId),
       round_(0),   // Round number (0 or 1 - preflop or postflop).
       num_winners_(-1),
-      pot_(1.5),  // Number of chips in the pot.
+      pot_(kBlinds[0]+kBlinds[1]),  // Number of chips in the pot.
       action_is_closed_(false),
       last_to_act_(1),
       cur_max_bet_(kBlinds[1]),
@@ -313,8 +313,8 @@ int PloState::CurrentPlayer() const {
 // underlying player.
 // On a player node, it should be ActionType::{kF, kX, kB, kC, kR}
 void PloState::DoApplyAction(Action move) {
-  //std::cout << "-----------------------------------------------------------------" << std::endl;
-  //std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
+  std::cout << "-----------------------------------------------------------------" << std::endl;
+  std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
   if (IsChanceNode()) {
     SPIEL_CHECK_GE(move, 0);
     SPIEL_CHECK_LT(move, default_deck_size*default_deck_size*default_deck_size*default_deck_size);
@@ -347,7 +347,7 @@ void PloState::DoApplyAction(Action move) {
       action_is_closed_ = true;
       ResolveWinner(); //2 player game - when one folds, it ends;
     }else if(move_type==ActionType::kX){ //checking - just move the game along
-      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, cur_round_bet_[cur_player_], EPS);
+      SPIEL_CHECK_EQ(cur_max_bet_, cur_round_bet_[cur_player_]);
       if(round_==0){
         SPIEL_CHECK_NE(cur_player_, 0); //The button cannot check preflop
         //This means the button called and the big blind checked their option
@@ -361,15 +361,15 @@ void PloState::DoApplyAction(Action move) {
         }
       } else SpielFatalError("Other rounds not implemented yet");
     }else if(move_type == ActionType::kC){
-      SPIEL_CHECK_GE(cur_max_bet_+EPS, cur_round_bet_[cur_player_]);
-      double to_call = cur_max_bet_-cur_round_bet_[cur_player_];
-      SPIEL_CHECK_GE(stack_[cur_player_]+EPS, to_call);
+      SPIEL_CHECK_GE(cur_max_bet_, 1+cur_round_bet_[cur_player_]);
+      int to_call = cur_max_bet_-cur_round_bet_[cur_player_];
+      SPIEL_CHECK_GE(stack_[cur_player_], to_call);
       stack_[cur_player_] -= to_call;
       ante_[cur_player_] += to_call;
       cur_round_bet_[cur_player_] += to_call;
       pot_ += to_call;
       action_is_closed_ = true;
-      if(round_==0&&cur_player_==0&&cur_max_bet_<=1.0+EPS) action_is_closed_ = false;
+      if(round_==0&&cur_player_==0&&cur_max_bet_<=kBlinds[1]) action_is_closed_ = false;
 
       if (IsTerminal()) { //aka last round
         ResolveWinner();
@@ -379,12 +379,12 @@ void PloState::DoApplyAction(Action move) {
         cur_player_ = NextPlayer();
       }
     }else if(move_type == ActionType::kB){
-      SPIEL_CHECK_FLOAT_NEAR(cur_max_bet_, 0, EPS);
-      double to_bet = bet_sizes[bet_ind]*pot_;
+      SPIEL_CHECK_EQ(cur_max_bet_, 0);
+      int to_bet = (int) (bet_sizes[bet_ind]*pot_);
       to_bet = std::min(to_bet, stack_[cur_player_]);
       stack_[cur_player_] -= to_bet;
       ante_[cur_player_] += to_bet;
-      cur_max_bet_ = to_bet;
+      cur_max_bet_ += to_bet;
       cur_round_bet_[cur_player_] += to_bet;
       pot_ += to_bet;
 
@@ -395,7 +395,7 @@ void PloState::DoApplyAction(Action move) {
         cur_player_ = NextPlayer();
       }
     }else if(move_type==ActionType::kR){
-      double to_raise = cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[bet_ind]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]);
+      int to_raise = (int)(cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[bet_ind]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]));
       to_raise = std::min(to_raise, stack_[cur_player_]);
       stack_[cur_player_] -= to_raise;
       ante_[cur_player_] += to_raise;
@@ -413,7 +413,7 @@ void PloState::DoApplyAction(Action move) {
       SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
     }
   }
-  //std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
+  std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
 }
 
 std::vector<Action> PloState::LegalActions() const {
@@ -446,7 +446,7 @@ std::vector<Action> PloState::LegalActions() const {
         }
       }
     }else{
-      SpielFatalError("round_>1 has not been implemented yet");
+      SpielFatalError("round_>1 chance has not been implemented yet");
     }
     return movelist;
   }
@@ -457,12 +457,12 @@ std::vector<Action> PloState::LegalActions() const {
     movelist.push_back(ActionType::kC);
   }
   // Can only chek if the current bet is 0, or if we are the big blind preflop after a limp
-  if (std::abs(cur_max_bet_-cur_round_bet_[cur_player_])<EPS) movelist.push_back(ActionType::kX);
+  if (cur_max_bet_==cur_round_bet_[cur_player_]) movelist.push_back(ActionType::kX);
   //Can bet postflop if the current bet is 0 and the stack allows
-  if(cur_max_bet_<EPS&&round_>0&&stack_[cur_player_]>EPS){
+  if(cur_max_bet_==0&&round_>0&&stack_[cur_player_]>0){
     for(int i=0;i<(int)bet_sizes.size();i++){
       movelist.push_back(ActionType::kB+5*i);
-      double to_bet = bet_sizes[i]*pot_;
+      int to_bet = (int) (bet_sizes[i]*pot_);
       if(to_bet>stack_[cur_player_]) break;
     }
   }
@@ -470,7 +470,7 @@ std::vector<Action> PloState::LegalActions() const {
   if((round_==0||cur_max_bet_>cur_round_bet_[cur_player_])&&stack_[cur_player_]>cur_max_bet_-cur_round_bet_[cur_player_]){
     for(int i=0;i<(int)raise_sizes.size();i++){
       movelist.push_back(ActionType::kR+5*i);
-      double to_raise = cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[i]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]);
+      int to_raise = (int)(cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[i]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]));
       if(to_raise>stack_[cur_player_]) break;
     }
   }
@@ -755,9 +755,9 @@ void PloState::NewRound() {
 void PloState::SequenceAppendMove(int move) {
   if (round_ == 0) {
     round0_sequence_.push_back(move);
-  } else {
+  } else if(round_==1){
     round1_sequence_.push_back(move);
-  }
+  }else SpielFatalError("SequenceAppendMove: round has to be 0 or 1");
 }
 
 std::vector<int> PloState::padded_betting_sequence() const {
