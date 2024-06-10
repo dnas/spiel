@@ -381,7 +381,8 @@ void PloState::DoApplyAction(Action move) {
     }else if(move_type == ActionType::kB){
       SPIEL_CHECK_EQ(cur_max_bet_, 0);
       int to_bet = (int) (bet_sizes[bet_ind]*pot_);
-      to_bet = std::min(to_bet, stack_[cur_player_]);
+      to_bet = std::max(to_bet, kBlinds[1]); //min bet rule: cannot bet less than 1BB
+      to_bet = std::min(to_bet, stack_[cur_player_]); //cannot bet more than stack, takes priority over the min bet rule
       stack_[cur_player_] -= to_bet;
       ante_[cur_player_] += to_bet;
       cur_max_bet_ += to_bet;
@@ -396,7 +397,8 @@ void PloState::DoApplyAction(Action move) {
       }
     }else if(move_type==ActionType::kR){
       int to_raise = (int)(cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[bet_ind]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]));
-      to_raise = std::min(to_raise, stack_[cur_player_]);
+      if(raise_sizes[bet_ind]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_])<cur_max_bet_-cur_round_bet_[cur_player_]) to_raise = 2*(cur_max_bet_-cur_round_bet_[cur_player_]); //min raise rule - must be at least equal to the previous raise
+      to_raise = std::min(to_raise, stack_[cur_player_]); //cannot raise more than stack
       stack_[cur_player_] -= to_raise;
       ante_[cur_player_] += to_raise;
       cur_round_bet_[cur_player_] += to_raise;
