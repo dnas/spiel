@@ -132,6 +132,7 @@ inline constexpr int kDefaultStacks = 1000;
 inline constexpr int default_deck_size = 26;
 inline const std::vector<double> bet_sizes = {0.33, 0.66, 1};
 inline const std::vector<double> raise_sizes = {0.33, 1};
+bool small_game = false; // whether to stop play after flop
 
 // Number of info states in the 2P game with default params.
 inline constexpr int kNumInfoStates = 10000000;
@@ -215,6 +216,7 @@ class PloState : public State {
   void SequenceAppendMove(int move);
   void Ante(Player player, int amount);
   void SetPrivate(Player player, Action move);
+  void DealPublic(int strt, int nr_cards, int move);
   HandScore GetScoreFrom5(std::vector<Card> cards) const;
   HandScore RankHand(Player player) const;
 
@@ -247,6 +249,8 @@ class PloState : public State {
   // Sequence of actions for each round. Needed to report information state.
   std::vector<int> round0_sequence_;
   std::vector<int> round1_sequence_;
+  std::vector<int> round2_sequence_;
+  std::vector<int> round3_sequence_;
   // Players cannot distinguish between cards of different suits with the same
   // rank.
   bool suit_isomorphism_;

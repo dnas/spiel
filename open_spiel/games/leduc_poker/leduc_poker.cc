@@ -292,7 +292,7 @@ int LeducState::CurrentPlayer() const {
 // underlying player.
 // On a player node, it should be ActionType::{kFold, kCall, kRaise}
 void LeducState::DoApplyAction(Action move) {
-  std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
+  //std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
   if (IsChanceNode()) {
     SPIEL_CHECK_GE(move, 0);
     SPIEL_CHECK_LT(move, deck_.size());
@@ -497,13 +497,13 @@ std::vector<double> LeducState::Returns() const {
   }
 
   std::vector<double> returns(num_players_);
-  std::cout << "Returns: [";
+  //std::cout << "Returns: [";
   for (auto player = Player{0}; player < num_players_; ++player) {
     // Money vs money at start.
     returns[player] = money_[player] - kStartingMoney;
-    std::cout << returns[player] << (player==num_players_-1?"]":", ");
+    //std::cout << returns[player] << (player==num_players_-1?"]":", ");
   }
-  std::cout<<std::endl;
+  //std::cout<<std::endl;
   return returns;
 }
 
