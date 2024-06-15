@@ -31,13 +31,13 @@
 #include "open_spiel/spiel_utils.h"
 
 #define EPS 0.01
-#define PLACEHOLDER -1
+#define PLACEHOLDER -100
 
 namespace open_spiel {
 namespace plo {
 namespace {
 
-int counter_zzz = 0;
+//int counter_zzz = 0;
 std::vector<int> kBlinds = {5, 10}; //Button and Big Blind. The button acts first pre-flop, the BB acts first post-flop
 
 const GameType kGameType{/*short_name=*/"plo",
@@ -55,7 +55,7 @@ const GameType kGameType{/*short_name=*/"plo",
                          /*provides_observation_tensor=*/true,
                          /*parameter_specification=*/
                          {{"players", GameParameter(kDefaultPlayers)},
-                          {"suit_isomorphism", GameParameter(false)},
+                          {"suit_isomorphism", GameParameter(true)},
                           {"game_abstraction", GameParameter(false)}}};
 
 std::shared_ptr<const Game> Factory(const GameParameters& params) {
@@ -287,19 +287,14 @@ PloState::PloState(std::shared_ptr<const Game> game,
     cur_round_bet_[p] = kBlinds[p];
 	}
 	deck_.clear();
-  if(default_deck_size==52){ //In normal conditions, add the 52 cards to the deck, consisting of ranks 0-12 (Deuce to Ace) and suits 0-3
-		for(int rank=0;rank<13;rank++){
-			for(int suit=0;suit<4;suit++){
-				deck_.push_back(Card(rank, suit));
-			}
-		}
-	}else if(default_deck_size==26){ //For testing: use 26 cards, 13 ranks with 2 suits
-    for(int rank=0;rank<13;rank++){
-			for(int suit=0;suit<2;suit++){
-				deck_.push_back(Card(rank, suit));
-			}
-		}
+  if(default_deck_size!=26&&default_deck_size!=52) SpielFatalError("Deck size should be 26 or 52");
+  for(int rank=0;rank<13;rank++){
+    for(int suit=0;suit<default_deck_size/13;suit++){
+      deck_.push_back(Card(rank, suit));
+    }
   }
+  suit_classes_.clear();
+  suit_classes_.push_back({0,1,2,3}); //at the start, all suits are equivalent
 }
 
 int PloState::CurrentPlayer() const {
@@ -314,8 +309,8 @@ int PloState::CurrentPlayer() const {
 // underlying player.
 // On a player node, it should be ActionType::{kF, kX, kB, kC, kR}
 void PloState::DoApplyAction(Action move) {
-  std::cout << "-----------------------------------------------------------------" << std::endl;
-  std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
+  //std::cout << "-----------------------------------------------------------------" << std::endl;
+  //std::cout << "At DoApplyAction, round_ = " << round_ << ", cur_player_ = " << cur_player_ << ", Chance? " << IsChanceNode() << ", move = " << move << std::endl;
   if (IsChanceNode()) {
     SPIEL_CHECK_GE(move, 0);
     SPIEL_CHECK_LT(move, default_deck_size*default_deck_size*default_deck_size*default_deck_size);
@@ -390,12 +385,94 @@ void PloState::DoApplyAction(Action move) {
       else cur_player_ = NextPlayer();
     }else SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
   }
+  /*
   std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
+  for(auto sclass:suit_classes_){
+    std::cout << "{";
+    for(int suit:sclass) std::cout << suit << ", ";
+    std::cout << "}, ";
+  }
+  std::cout << std::endl;
+  */
+}
+
+std::vector<std::vector<Card>> PloState::GetIso(std::vector<std::vector<Card>> classes) const{
+  //create map from suit class -> counter
+  std::map<std::vector<int>, int> class_counter;
+  for(auto sclass:suit_classes_) class_counter[sclass] = 0;
+  //permutate suits
+  for(auto sclass: classes){
+    if(sclass.empty()) continue;
+    //find the suit in suit_classes_
+    for(int i=0;i<(int)suit_classes_.size();i++){
+      if(std::lower_bound(suit_classes_[i].begin(), suit_classes_[i].end(), sclass[0].suit)!=suit_classes_[i].end()){
+        //convert every card in this class to the suit indicated by suit_classes_[class_counter]
+        for(Card& c:sclass) c.suit = suit_classes_[i][class_counter[suit_classes_[i]]];
+        class_counter[suit_classes_[i]]++;
+        break;
+      }
+    }
+  }
+  return classes;
+}
+
+int PloState::GetCardIndex(Card c) const{
+  int nr_suits = default_deck_size/13;
+  return nr_suits*c.rank+c.suit;
+}
+
+std::vector<std::vector<Card>> PloState::GetClasses(std::vector<int> inds, bool to_sort) const{
+  std::vector<std::vector<Card>> classes(4);
+  for(int ind:inds) classes[deck_[ind].suit].push_back(deck_[ind]);
+  if(to_sort) std::sort(classes.begin(), classes.end(), comp);
+  return classes;
+}
+
+void PloState::UpdateSuitClasses(std::vector<int> inds){
+  bool equiv[4][4];
+  for(int i=0;i<4;i++) for(int j=0;j<4;j++) equiv[i][j] = false;
+  for(int i=0;i<4;i++) equiv[i][i] = true;
+  for(auto sclass:suit_classes_){
+    for(int i=0;i<(int)sclass.size();i++){
+      for(int j=i+1;j<(int)sclass.size();j++){
+        equiv[i][j] = true;
+        equiv[j][i] = true;
+      }
+    }
+  }
+  std::vector<std::vector<Card>> classes = GetClasses(inds, false);
+  for(int i=0;i<4;i++){
+    for(int j=i+1;j<4;j++){
+      equiv[i][j] &= comp_eq(classes[i], classes[j]);
+      equiv[j][i] = equiv[i][j];
+    }
+  }
+  for(int i=0;i<4;i++){
+    for(int j=0;j<4;j++){
+      for(int k=0;k<4;k++){
+        if(equiv[i][j]&&equiv[j][k]&&!equiv[i][k]) SpielFatalError("Suit equivalence is not transitive");
+      }
+    }
+  }
+  suit_classes_.clear();
+  std::vector<bool> visited(4, false);
+  for(int i=0;i<4;i++){
+    if(visited[i]) continue;
+    std::vector<int> cur_class;
+    for(int j=i;j<4;j++){
+      if(equiv[i][j]){
+        visited[j] = true;
+        cur_class.push_back(j);
+      }
+    }
+    suit_classes_.push_back(cur_class);
+  }
 }
 
 std::vector<Action> PloState::LegalActions() const {
   if (IsTerminal()) return {};
   std::vector<Action> movelist;
+  std::set<Action> moveset;
   if (IsChanceNode()) {
     if(round_==0){ //deal 4 cards to each player
       for(int i=0;i<default_deck_size;i++){
@@ -406,7 +483,14 @@ std::vector<Action> PloState::LegalActions() const {
             if(deck_[k] == kInvalidCard) continue;
             for(int l=k+1;l<default_deck_size;l++){
               if(deck_[l] == kInvalidCard) continue;
-              movelist.push_back(i+default_deck_size*j+default_deck_size*default_deck_size*k+default_deck_size*default_deck_size*default_deck_size*l);
+              if(!suit_isomorphism_) movelist.push_back(i+default_deck_size*j+default_deck_size*default_deck_size*k+default_deck_size*default_deck_size*default_deck_size*l);
+              else{
+                std::vector<std::vector<Card>> classes = GetClasses({i,j,k,l});
+                std::vector<std::vector<Card>> iso = GetIso(classes);
+                std::vector<Card> iso_flattened;
+                for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+                moveset.insert(GetCardIndex(iso_flattened[0])+default_deck_size*GetCardIndex(iso_flattened[1])+default_deck_size*default_deck_size*GetCardIndex(iso_flattened[2])+default_deck_size*default_deck_size*default_deck_size*GetCardIndex(iso_flattened[3]));
+              }
             }
           }
         }
@@ -418,16 +502,31 @@ std::vector<Action> PloState::LegalActions() const {
           if(deck_[j] == kInvalidCard) continue;
           for(int k=j+1;k<default_deck_size;k++){
             if(deck_[k] == kInvalidCard) continue;
-            movelist.push_back(i+default_deck_size*j+default_deck_size*default_deck_size*k);
+            if(!suit_isomorphism_) movelist.push_back(i+default_deck_size*j+default_deck_size*default_deck_size*k);
+            else{
+              std::vector<std::vector<Card>> classes = GetClasses({i,j,k});
+              std::vector<std::vector<Card>> iso = GetIso(classes);
+              std::vector<Card> iso_flattened;
+              for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+              moveset.insert(GetCardIndex(iso_flattened[0])+default_deck_size*GetCardIndex(iso_flattened[1])+default_deck_size*default_deck_size*GetCardIndex(iso_flattened[2]));
+            }
           }
         }
       }
     }else if(round_<=3){ //deal 1 public card
       for(int i=0;i<default_deck_size;i++){
         if(deck_[i] == kInvalidCard) continue;
-        movelist.push_back(i);
+        if(!suit_isomorphism_) movelist.push_back(i);
+        else{
+          std::vector<std::vector<Card>> classes = GetClasses({i});
+          std::vector<std::vector<Card>> iso = GetIso(classes);
+          std::vector<Card> iso_flattened;
+          for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+          moveset.insert(GetCardIndex(iso_flattened[0]));
+        }
       }
-    }else SpielFatalError("round_>1 chance has not been implemented yet");
+    }else SpielFatalError("round_ too big in LegalActions");
+    if(suit_isomorphism_) std::vector<Action> movelist(moveset.begin(), moveset.end());
     return movelist;
   }
 
@@ -457,13 +556,19 @@ std::vector<Action> PloState::LegalActions() const {
   return movelist;
 }
 
-void PloState::DealPublic(int strt, int nr_cards, int move){
+void PloState::DealPublic(int strt, int nr_cards, Action move){
   // Encoded in move using base 52 (or 26)
+    std::vector<int> inds;
     for(int i=strt;i<strt+nr_cards;i++){
       public_cards_[i] = deck_[move%default_deck_size];
-      deck_[move%default_deck_size] = kInvalidCard;
+      if(public_cards_[i]==kInvalidCard) SpielFatalError("Trying to deal invalid card");
+      inds.push_back(move%default_deck_size);
       deck_remaining_--;
       move/=default_deck_size;
+    }
+    if(suit_isomorphism_) UpdateSuitClasses(inds);
+    for(int i=strt;i<strt+nr_cards;i++){
+      deck_[inds[i-strt]] = kInvalidCard;
     }
     // We have finished dealing, let's bet!
     cur_player_ = NextPlayer();
@@ -572,6 +677,7 @@ std::unique_ptr<State> PloState::Clone() const {
 std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
   SPIEL_CHECK_TRUE(IsChanceNode());
   std::vector<std::pair<Action, double>> outcomes;
+  std::map<Action, double> outcome_map;
   if(round_==0){ //deal 4 cards to each player
     double nr_holes = ((double)(deck_remaining_*(deck_remaining_-1)*(deck_remaining_-2)*(deck_remaining_-3)))/24.0;
     for(int i=0;i<default_deck_size;i++){
@@ -582,7 +688,16 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
           if(deck_[k] == kInvalidCard) continue;
           for(int l=k+1;l<default_deck_size;l++){
             if(deck_[l] == kInvalidCard) continue;
-            outcomes.push_back({i+default_deck_size*j+default_deck_size*default_deck_size*k+default_deck_size*default_deck_size*default_deck_size*l, 1.0/nr_holes});
+            if(!suit_isomorphism_) outcomes.push_back({i+default_deck_size*j+default_deck_size*default_deck_size*k+default_deck_size*default_deck_size*default_deck_size*l, 1.0/nr_holes});
+            else{
+              std::vector<std::vector<Card>> classes = GetClasses({i,j,k,l});
+              std::vector<std::vector<Card>> iso = GetIso(classes);
+              std::vector<Card> iso_flattened;
+              for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+              Action to_act = GetCardIndex(iso_flattened[0])+default_deck_size*GetCardIndex(iso_flattened[1])+default_deck_size*default_deck_size*GetCardIndex(iso_flattened[2])+default_deck_size*default_deck_size*default_deck_size*GetCardIndex(iso_flattened[3]);
+              if(outcome_map.find(to_act)==outcome_map.end()) outcome_map[to_act] = 1.0;
+              else outcome_map[to_act] += 1.0;
+            }
           }
         }
       }
@@ -595,7 +710,16 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
         if(deck_[j] == kInvalidCard) continue;
         for(int k=j+1;k<default_deck_size;k++){
           if(deck_[k] == kInvalidCard) continue;
-          outcomes.push_back({i+default_deck_size*j+default_deck_size*default_deck_size*k, 1.0/nr_flops});
+          if(!suit_isomorphism_) outcomes.push_back({i+default_deck_size*j+default_deck_size*default_deck_size*k, 1.0/nr_flops});
+          else{
+            std::vector<std::vector<Card>> classes = GetClasses({i,j,k});
+            std::vector<std::vector<Card>> iso = GetIso(classes);
+            std::vector<Card> iso_flattened;
+            for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+            Action to_act = GetCardIndex(iso_flattened[0])+default_deck_size*GetCardIndex(iso_flattened[1])+default_deck_size*default_deck_size*GetCardIndex(iso_flattened[2]);
+            if(outcome_map.find(to_act)==outcome_map.end()) outcome_map[to_act] = 1.0;
+            else outcome_map[to_act] += 1.0;
+          }
         }
       }
     }
@@ -604,9 +728,26 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
     for(int i=0;i<default_deck_size;i++){
       if(deck_[i] == kInvalidCard) continue;
       outcomes.push_back({i, 1.0/nr_turnsorrivers});
+      if(!suit_isomorphism_) outcomes.push_back({i, 1.0/nr_turnsorrivers});
+      else{
+        std::vector<std::vector<Card>> classes = GetClasses({i});
+        std::vector<std::vector<Card>> iso = GetIso(classes);
+        std::vector<Card> iso_flattened;
+        for(auto sclass:iso) for(Card c:sclass) iso_flattened.push_back(c);
+        Action to_act = GetCardIndex(iso_flattened[0]);
+        if(outcome_map.find(to_act)==outcome_map.end()) outcome_map[to_act] = 1.0;
+        else outcome_map[to_act] += 1.0;
+      }
     }
   }else{
     SpielFatalError("round number too large in ChanceOutcomes");
+  }
+  if(suit_isomorphism_){
+    outcomes.clear();
+    double sum_outcomes = 0;
+    for(auto outc:outcome_map) sum_outcomes += outc.second;
+    for(auto& outc:outcome_map) outc.second/=sum_outcomes;
+    for(auto outc:outcome_map) outcomes.push_back({outc.first, outc.second});
   }
   return outcomes;
 }
@@ -796,14 +937,20 @@ void PloState::SetPrivate(Player player, Action move) {
   // Round 1. `move` refers to the encoding of the 4 cards in base 52
   // underlying player (given by `private_hole_dealt_`).
 	std::vector<Card> cards_to_give;
+  std::vector<int> inds;
 	for(int i=0;i<4;i++){
 		cards_to_give.push_back(deck_[move%default_deck_size]);
-		deck_[move%default_deck_size] = kInvalidCard;
+    if(deck_[move%default_deck_size]==kInvalidCard) SpielFatalError("Trying to deal kInvalidCard to player.");
+    inds.push_back(move%default_deck_size);
 		move/=default_deck_size;
 		--deck_remaining_;
 	}
 	private_hole_[player] = Hole(cards_to_give);
   ++private_hole_dealt_;
+  if(suit_isomorphism_) UpdateSuitClasses(inds);
+  for(int i=0;i<4;i++){
+		deck_[inds[i]] = kInvalidCard;
+	}
 }
 
 std::unique_ptr<State> PloState::ResampleFromInfostate(

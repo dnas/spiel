@@ -81,6 +81,22 @@ class Card{
     }
 };
 
+bool comp(std::vector<Card> a, std::vector<Card> b){
+  std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
+  int i = 0;
+  while(i<(int)a.size()&&i<(int)b.size()&&a[i].rank==b[i].rank) i++;
+  if(i<(int)a.size()&&i<(int)b.size()) return a[i].rank<b[i].rank;
+  return a.size()<b.size();
+}
+
+bool comp_eq(std::vector<Card> a, std::vector<Card> b){
+  std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
+  int i = 0;
+  while(i<(int)a.size()&&i<(int)b.size()&&a[i].rank==b[i].rank) i++;
+  if(i<(int)a.size()&&i<(int)b.size()) return false;
+  return a.size()==b.size();
+}
+
 class Hole{
   public:
     std::vector<Card> cards;
@@ -127,11 +143,10 @@ class HandScore{
 inline const Card kInvalidCard{-10000, -10000};
 inline const Hole kInvalidHole{kInvalidCard, kInvalidCard, kInvalidCard, kInvalidCard};
 inline constexpr int kDefaultPlayers = 2;
-inline constexpr int kNumSuits = 4;
 inline constexpr int kDefaultStacks = 1000;
-inline constexpr int default_deck_size = 26;
-inline const std::vector<double> bet_sizes = {0.33, 0.66, 1};
-inline const std::vector<double> raise_sizes = {0.33, 1};
+inline constexpr int default_deck_size = 52;
+inline const std::vector<double> bet_sizes = {1};
+inline const std::vector<double> raise_sizes = {1};
 bool small_game = false; // whether to stop play after flop
 
 // Number of info states in the 2P game with default params.
@@ -216,9 +231,13 @@ class PloState : public State {
   void SequenceAppendMove(int move);
   void Ante(Player player, int amount);
   void SetPrivate(Player player, Action move);
-  void DealPublic(int strt, int nr_cards, int move);
+  void DealPublic(int strt, int nr_cards, Action move);
   HandScore GetScoreFrom5(std::vector<Card> cards) const;
   HandScore RankHand(Player player) const;
+  std::vector<std::vector<Card>> GetIso(std::vector<std::vector<Card>> classes) const;
+  std::vector<std::vector<Card>> GetClasses(std::vector<int> inds, bool to_sort=true) const;
+  int GetCardIndex(Card c) const;
+  void UpdateSuitClasses(std::vector<int> inds);
 
   // Fields sets to bad/invalid values. Use Game::NewInitialState().
   Player cur_player_;
@@ -254,6 +273,8 @@ class PloState : public State {
   // Players cannot distinguish between cards of different suits with the same
   // rank.
   bool suit_isomorphism_;
+  std::vector<std::vector<int>> suit_classes_; //vector of classes of indistinguishable suits, plus a counter for each class.
+  //for example, we might have the pairs {{0,3}, {1,2}}, meaning that suits 0,3 are equivalent, and same for 1,2.
   bool game_abstraction_;
 };
 
