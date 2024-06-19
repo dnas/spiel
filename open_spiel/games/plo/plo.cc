@@ -386,9 +386,9 @@ void PloState::DoApplyAction(Action move) {
       else cur_player_ = NextPlayer();
     }else SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
   }
-  /*
-  std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
   
+  //std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
+  /*
   for(auto sclass:suit_classes_){
     std::cout << "{";
     for(int suit:sclass) std::cout << suit << ", ";
@@ -407,7 +407,7 @@ std::vector<std::vector<Card>> PloState::GetIso(std::vector<std::vector<Card>> c
     if(sclass.empty()) continue;
     //find the suit in suit_classes_
     for(int i=0;i<(int)suit_classes_.size();i++){
-      if(std::lower_bound(suit_classes_[i].begin(), suit_classes_[i].end(), sclass[0].suit)!=suit_classes_[i].end()){
+      if(std::find(suit_classes_[i].begin(), suit_classes_[i].end(), sclass[0].suit)!=suit_classes_[i].end()){
         //convert every card in this class to the suit indicated by suit_classes_[class_counter]
         for(Card& c:sclass) c.suit = suit_classes_[i][class_counter[suit_classes_[i]]];
         class_counter[suit_classes_[i]]++;
