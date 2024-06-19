@@ -237,7 +237,7 @@ class PloState : public State {
   std::vector<std::vector<Card>> GetIso(std::vector<std::vector<Card>> classes) const;
   std::vector<std::vector<Card>> GetClasses(std::vector<int> inds, bool to_sort=true) const;
   int GetCardIndex(Card c) const;
-  void UpdateSuitClasses(std::vector<int> inds);
+  void UpdateSuitClasses(std::vector<Card> cs, std::vector<std::vector<int>> my_suit_classes);
 
   // Fields sets to bad/invalid values. Use Game::NewInitialState().
   Player cur_player_;
@@ -273,8 +273,10 @@ class PloState : public State {
   // Players cannot distinguish between cards of different suits with the same
   // rank.
   bool suit_isomorphism_;
-  std::vector<std::vector<int>> suit_classes_; //vector of classes of indistinguishable suits, plus a counter for each class.
+  std::vector<std::vector<int>> suit_classes_; //Current vector of classes of indistinguishable suits, plus a counter for each class.
   //for example, we might have the pairs {{0,3}, {1,2}}, meaning that suits 0,3 are equivalent, and same for 1,2.
+  std::vector<std::vector<int>> suit_classes_flop_; //A snapshot of the above vector just before the flop is dealt.
+  //This is important because the turn may join new classes again
   bool game_abstraction_;
 };
 

@@ -280,6 +280,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
       game_abstraction_(game_abstraction) {
   // Cards by value (0-6 for standard 2-player game, kInvalidCard if no longer
   // in the deck.)
+  if(suit_isomorphism_&&small_game) SpielFatalError("Cannot use suit isomorphism with small game");
   std::iota(players_remaining_.begin(), players_remaining_.end(), 0);
 	for(int p = 0;p<game->NumPlayers();p++){
 		stack_[p] = kDefaultStacks-kBlinds[p];
@@ -385,9 +386,9 @@ void PloState::DoApplyAction(Action move) {
       else cur_player_ = NextPlayer();
     }else SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
   }
-  
-  //std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
   /*
+  std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
+  
   for(auto sclass:suit_classes_){
     std::cout << "{";
     for(int suit:sclass) std::cout << suit << ", ";
@@ -395,7 +396,6 @@ void PloState::DoApplyAction(Action move) {
   }
   std::cout << std::endl;
   */
-  
 }
 
 std::vector<std::vector<Card>> PloState::GetIso(std::vector<std::vector<Card>> classes) const{
@@ -430,21 +430,24 @@ std::vector<std::vector<Card>> PloState::GetClasses(std::vector<int> inds, bool 
   return classes;
 }
 
-void PloState::UpdateSuitClasses(std::vector<int> inds){
+void PloState::UpdateSuitClasses(std::vector<Card> cs, std::vector<std::vector<int>> my_suit_classes){
   bool equiv[4][4];
   for(int i=0;i<4;i++) for(int j=0;j<4;j++) equiv[i][j] = false;
-  for(int i=0;i<4;i++) equiv[i][i] = true;
-  for(auto sclass:suit_classes_){
+  for(auto sclass:my_suit_classes){
     for(int i=0;i<(int)sclass.size();i++){
-      for(int j=i+1;j<(int)sclass.size();j++){
-        equiv[i][j] = true;
-        equiv[j][i] = true;
+      for(int j=i;j<(int)sclass.size();j++){
+        equiv[sclass[i]][sclass[j]] = true;
+        equiv[sclass[j]][sclass[i]] = true;
       }
     }
   }
-  std::vector<std::vector<Card>> classes = GetClasses(inds, false);
+
+  std::vector<std::vector<Card>> classes(4);
+  for(Card c:cs) classes[c.suit].push_back(c);
+  
   for(int i=0;i<4;i++){
     for(int j=i+1;j<4;j++){
+      //std::cout << "equiv[" << i << "][" << j << "] = " << equiv[i][j] << " comp_eq: " << comp_eq(classes[i], classes[j]) << std::endl;
       equiv[i][j] &= comp_eq(classes[i], classes[j]);
       equiv[j][i] = equiv[i][j];
     }
@@ -564,17 +567,36 @@ std::vector<Action> PloState::LegalActions() const {
 
 void PloState::DealPublic(int strt, int nr_cards, Action move){
   // Encoded in move using base 52 (or 26)
-    std::vector<int> inds;
     for(int i=strt;i<strt+nr_cards;i++){
       public_cards_[i] = deck_[move%default_deck_size];
-      if(public_cards_[i]==kInvalidCard) SpielFatalError("Trying to deal invalid card");
-      inds.push_back(move%default_deck_size);
+      if(public_cards_[i]==kInvalidCard){
+        /*
+        std::cout << "i: " << i << "strt: " << strt << "move: " << move << std::endl;
+        std::cout << private_hole_[0].ToString() << std::endl;
+        std::cout << private_hole_[1].ToString() << std::endl;
+        std::cout << public_cards_[0].ToString() << " " << public_cards_[1].ToString() << " " << public_cards_[2].ToString() << std::endl;
+        std::cout << public_cards_[3].ToString() << std::endl;
+        for(auto sclass:suit_classes_){
+          std::cout << "{";
+          for(int suit:sclass) std::cout << suit << ", ";
+          std::cout << "}, ";
+        }
+        std::cout << std::endl;
+        std::cout << "Round: " << round_ << std::endl;
+        std::cout << "Legal Actions:" << std::endl;
+        for(Action leg:LegalActions()) std::cout << leg << std::endl;
+        */
+        SpielFatalError("Trying to deal invalid card");
+      }
+      deck_[move%default_deck_size] = kInvalidCard;
       deck_remaining_--;
       move/=default_deck_size;
     }
-    if(suit_isomorphism_) UpdateSuitClasses(inds);
-    for(int i=strt;i<strt+nr_cards;i++){
-      deck_[inds[i-strt]] = kInvalidCard;
+    if(suit_isomorphism_){
+      std::vector<Card> cs;
+      for(int i=0;i<strt+nr_cards;i++) cs.push_back(public_cards_[i]);
+      if(suit_classes_flop_.empty()) SpielFatalError("Suit equivalent classes should not be empty after the flop");
+      UpdateSuitClasses(cs, suit_classes_flop_);
     }
     // We have finished dealing, let's bet!
     cur_player_ = NextPlayer();
@@ -943,20 +965,19 @@ void PloState::SetPrivate(Player player, Action move) {
   // Round 1. `move` refers to the encoding of the 4 cards in base 52
   // underlying player (given by `private_hole_dealt_`).
 	std::vector<Card> cards_to_give;
-  std::vector<int> inds;
 	for(int i=0;i<4;i++){
 		cards_to_give.push_back(deck_[move%default_deck_size]);
     if(deck_[move%default_deck_size]==kInvalidCard) SpielFatalError("Trying to deal kInvalidCard to player.");
-    inds.push_back(move%default_deck_size);
+    deck_[move%default_deck_size] = kInvalidCard;
 		move/=default_deck_size;
 		--deck_remaining_;
 	}
 	private_hole_[player] = Hole(cards_to_give);
   ++private_hole_dealt_;
-  if(suit_isomorphism_) UpdateSuitClasses(inds);
-  for(int i=0;i<4;i++){
-		deck_[inds[i]] = kInvalidCard;
-	}
+  if(suit_isomorphism_){
+    UpdateSuitClasses(cards_to_give, suit_classes_);
+    suit_classes_flop_ = suit_classes_;
+  }
 }
 
 std::unique_ptr<State> PloState::ResampleFromInfostate(
