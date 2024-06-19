@@ -28,8 +28,7 @@ namespace {
 std::unique_ptr<HistoryNode> RecursivelyBuildGameTree(
     std::unique_ptr<State> state, Player player_id,
     absl::flat_hash_map<std::string, HistoryNode*>* state_to_node) {
-  std::unique_ptr<HistoryNode> node(
-      new HistoryNode(player_id, std::move(state)));
+  std::unique_ptr<HistoryNode> node(new HistoryNode(player_id, std::move(state)));
   if (state_to_node == nullptr) SpielFatalError("state_to_node is null.");
   (*state_to_node)[node->GetHistory()] = node.get();
   State* state_ptr = node->GetState();
@@ -39,14 +38,16 @@ std::unique_ptr<HistoryNode> RecursivelyBuildGameTree(
     }
     case StateType::kChance: {
       double probability_sum = 0;
+      //std::cout << "kChance state" << std::endl;
+      //for (const auto& [outcome, prob] : state_ptr->ChanceOutcomes()) std::cout << outcome << " with p = " << prob << std::endl;
       for (const auto& [outcome, prob] : state_ptr->ChanceOutcomes()) {
         std::unique_ptr<State> child = state_ptr->Child(outcome);
         if (child == nullptr) {
           SpielFatalError("Can't add child; child is null.");
         }
         probability_sum += prob;
-        std::unique_ptr<HistoryNode> child_node = RecursivelyBuildGameTree(
-            std::move(child), player_id, state_to_node);
+        std::unique_ptr<HistoryNode> child_node = RecursivelyBuildGameTree(std::move(child), player_id, state_to_node);
+        //std::cout << "AddChild kChance" << std::endl;
         node->AddChild(outcome, {prob, std::move(child_node)});
       }
       SPIEL_CHECK_FLOAT_EQ(probability_sum, 1.0);
@@ -102,7 +103,14 @@ HistoryNode::HistoryNode(Player player_id, std::unique_ptr<State> game_state)
 
 void HistoryNode::AddChild(
     Action outcome, std::pair<double, std::unique_ptr<HistoryNode>> child) {
-  if (!legal_actions_.count(outcome)) SpielFatalError("Child is not legal.");
+  if (!legal_actions_.count(outcome)){
+    std::cout << "Illegal outcome: " << outcome << std::endl;
+    std::cout << "Legal: " << std::endl;
+    for(const auto leg_act:legal_actions_){
+      std::cout << leg_act << std::endl;
+    }
+    SpielFatalError("Child is not legal.");
+  }
   if (child.second == nullptr) {
     SpielFatalError("Error inserting child; child is null.");
   }

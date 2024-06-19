@@ -385,8 +385,9 @@ void PloState::DoApplyAction(Action move) {
       else cur_player_ = NextPlayer();
     }else SpielFatalError(absl::StrCat("Move ", move, " is invalid. ChanceNode?", IsChanceNode()));
   }
+  
+  //std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
   /*
-  std::cout << "Stacks: [" << stack_[0] << ", " << stack_[1] << "], Pot: " << pot_ << std::endl; 
   for(auto sclass:suit_classes_){
     std::cout << "{";
     for(int suit:sclass) std::cout << suit << ", ";
@@ -394,6 +395,7 @@ void PloState::DoApplyAction(Action move) {
   }
   std::cout << std::endl;
   */
+  
 }
 
 std::vector<std::vector<Card>> PloState::GetIso(std::vector<std::vector<Card>> classes) const{
@@ -401,7 +403,7 @@ std::vector<std::vector<Card>> PloState::GetIso(std::vector<std::vector<Card>> c
   std::map<std::vector<int>, int> class_counter;
   for(auto sclass:suit_classes_) class_counter[sclass] = 0;
   //permutate suits
-  for(auto sclass: classes){
+  for(auto& sclass: classes){
     if(sclass.empty()) continue;
     //find the suit in suit_classes_
     for(int i=0;i<(int)suit_classes_.size();i++){
@@ -526,7 +528,11 @@ std::vector<Action> PloState::LegalActions() const {
         }
       }
     }else SpielFatalError("round_ too big in LegalActions");
-    if(suit_isomorphism_) std::vector<Action> movelist(moveset.begin(), moveset.end());
+    if(suit_isomorphism_) std::copy(moveset.begin(), moveset.end(), std::back_inserter(movelist));
+    if(movelist.size()!=moveset.size()){
+      std::cout << "Movelist size: " << movelist.size() << ", Moveset size: " << moveset.size() << std::endl;
+      SpielFatalError("Movelist cannot be empty in ChanceNode in LegalActions");
+    }
     return movelist;
   }
 
@@ -727,7 +733,6 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
     double nr_turnsorrivers = (double)deck_remaining_;
     for(int i=0;i<default_deck_size;i++){
       if(deck_[i] == kInvalidCard) continue;
-      outcomes.push_back({i, 1.0/nr_turnsorrivers});
       if(!suit_isomorphism_) outcomes.push_back({i, 1.0/nr_turnsorrivers});
       else{
         std::vector<std::vector<Card>> classes = GetClasses({i});
@@ -754,7 +759,8 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
 
 int PloState::NextPlayer() const {
   // If we are on a chance node, it is the first player to play
-  if((round_==0&&private_hole_dealt_<num_players_)||(round_==0&&action_is_closed_)) {
+  int nr_rounds = small_game?2:4;
+  if((round_==0&&private_hole_dealt_<num_players_)||(round_<=nr_rounds-1&&action_is_closed_)) {
     return kChancePlayerId;
   }
   if(cur_player_==kChancePlayerId){

@@ -106,8 +106,8 @@ int main(int argc, char** argv) {
   // "Monte Carlo Sampling and Regret Minimization For Equilibrium Computation
   // and Decision-Making in Large Extensive Form Games", 2013).
   std::mt19937 rng(algorithms::kSeed);
-  algorithms::MCCFR_2PGameTest("kuhn_poker", &rng, 10000, 0.05);
-  algorithms::MCCFR_2PGameTest("leduc_poker", &rng, 10000, 2.5);
+  //algorithms::MCCFR_2PGameTest("kuhn_poker", &rng, 10000, 0.05);
+  //algorithms::MCCFR_2PGameTest("leduc_poker", &rng, 10000, 2.5);
   algorithms::MCCFR_2PGameTest("plo", &rng, 1, 2000);
   return;
   algorithms::MCCFR_2PGameTest("liars_dice", &rng, 100, 1.6);
