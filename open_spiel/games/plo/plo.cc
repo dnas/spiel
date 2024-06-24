@@ -56,7 +56,7 @@ const GameType kGameType{/*short_name=*/"plo",
                          /*parameter_specification=*/
                          {{"players", GameParameter(kDefaultPlayers)},
                           {"suit_isomorphism", GameParameter(true)},
-                          {"game_abstraction", GameParameter(false)}}};
+                          {"game_abstraction", GameParameter(true)}}};
 
 std::shared_ptr<const Game> Factory(const GameParameters& params) {
   return std::shared_ptr<const Game>(new PloGame(params));
@@ -277,7 +277,7 @@ PloState::PloState(std::shared_ptr<const Game> game,
       // Players cannot distinguish between cards of different suits with the
       // same rank.
       suit_isomorphism_(suit_isomorphism),
-      game_abstraction_(game_abstraction) {
+      game_abstraction_(game_abstraction){
   // Cards by value (0-6 for standard 2-player game, kInvalidCard if no longer
   // in the deck.)
   if(suit_isomorphism_&&small_game) SpielFatalError("Cannot use suit isomorphism with small game");
@@ -296,6 +296,17 @@ PloState::PloState(std::shared_ptr<const Game> game,
   }
   suit_classes_.clear();
   suit_classes_.push_back({0,1,2,3}); //at the start, all suits are equivalent
+  nr_raises_ = 0;
+  max_raises_ = 100000000; //should be infinity
+  //ABSTRACTION
+  if(game_abstraction_){
+    nr_flops_ = 1;
+    nr_turns_ = 1;
+    nr_rivers_ = 1;
+    group_by_ = 1;
+    nr_holes_ = 1;
+    max_raises_ = 1;
+  }
 }
 
 int PloState::CurrentPlayer() const {
@@ -369,6 +380,7 @@ void PloState::DoApplyAction(Action move) {
       cur_max_bet_ += to_bet;
       cur_round_bet_[cur_player_] += to_bet;
       pot_ += to_bet;
+      nr_raises_++;
 
       if (IsTerminal()) SpielFatalError("Cannot be terminal after a bet");
       else cur_player_ = NextPlayer();
@@ -381,6 +393,7 @@ void PloState::DoApplyAction(Action move) {
       cur_round_bet_[cur_player_] += to_raise;
       cur_max_bet_ = cur_round_bet_[cur_player_];
       pot_ += to_raise;
+      nr_raises_++;
 
       if (IsTerminal()) SpielFatalError("Cannot be terminal after a raise");
       else cur_player_ = NextPlayer();
@@ -536,6 +549,14 @@ std::vector<Action> PloState::LegalActions() const {
       std::cout << "Movelist size: " << movelist.size() << ", Moveset size: " << moveset.size() << std::endl;
       SpielFatalError("Movelist cannot be empty in ChanceNode in LegalActions");
     }
+    if(game_abstraction_){
+      std::mt19937 rng(5334);
+      std::shuffle(movelist.begin(), movelist.end(), rng);
+      if(round_==0) movelist.resize(nr_holes_);
+      if(round_==1) movelist.resize(nr_flops_);
+      if(round_==2) movelist.resize(nr_turns_);
+      if(round_==3) movelist.resize(nr_rivers_);
+    }
     return movelist;
   }
 
@@ -546,20 +567,22 @@ std::vector<Action> PloState::LegalActions() const {
   }
   // Can only chek if the current bet is 0, or if we are the big blind preflop after a limp
   if (cur_max_bet_==cur_round_bet_[cur_player_]) movelist.push_back(ActionType::kX);
-  //Can bet postflop if the current bet is 0 and the stack allows
-  if(cur_max_bet_==0&&round_>0&&stack_[cur_player_]>0){
-    for(int i=0;i<(int)bet_sizes.size();i++){
-      movelist.push_back(ActionType::kB+5*i);
-      int to_bet = (int) (bet_sizes[i]*pot_);
-      if(to_bet>stack_[cur_player_]) break;
+  if(nr_raises_<max_raises_){ //Cannot bet or raise if already reached the max in the current round
+    //Can bet postflop if the current bet is 0 and the stack allows
+    if(cur_max_bet_==0&&round_>0&&stack_[cur_player_]>0){
+      for(int i=0;i<(int)bet_sizes.size();i++){
+        movelist.push_back(ActionType::kB+5*i);
+        int to_bet = (int) (bet_sizes[i]*pot_);
+        if(to_bet>stack_[cur_player_]) break;
+      }
     }
-  }
-  //Can raise if we are preflop, or if cur_max_bet_>cur_round_bet_[cur_player_], and the stack allows
-  if((round_==0||cur_max_bet_>cur_round_bet_[cur_player_])&&stack_[cur_player_]>cur_max_bet_-cur_round_bet_[cur_player_]){
-    for(int i=0;i<(int)raise_sizes.size();i++){
-      movelist.push_back(ActionType::kR+5*i);
-      int to_raise = (int)(cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[i]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]));
-      if(to_raise>stack_[cur_player_]) break;
+    //Can raise if we are preflop, or if cur_max_bet_>cur_round_bet_[cur_player_], and the stack allows
+    if((round_==0||cur_max_bet_>cur_round_bet_[cur_player_])&&stack_[cur_player_]>cur_max_bet_-cur_round_bet_[cur_player_]){
+      for(int i=0;i<(int)raise_sizes.size();i++){
+        movelist.push_back(ActionType::kR+5*i);
+        int to_raise = (int)(cur_max_bet_-cur_round_bet_[cur_player_]+raise_sizes[i]*(pot_+cur_max_bet_-cur_round_bet_[cur_player_]));
+        if(to_raise>stack_[cur_player_]) break;
+      }
     }
   }
   return movelist;
@@ -776,6 +799,14 @@ std::vector<std::pair<Action, double>> PloState::ChanceOutcomes() const {
     for(auto& outc:outcome_map) outc.second/=sum_outcomes;
     for(auto outc:outcome_map) outcomes.push_back({outc.first, outc.second});
   }
+  if(game_abstraction_){
+    if(!suit_isomorphism_) for(auto outc:outcomes) outcome_map[outc.first] = outc.second;
+    double sum_outcomes = 0;
+    std::vector<Action> leg = LegalActions();
+    for(Action ac:leg) sum_outcomes += outcome_map[ac];
+    outcomes.clear();
+    for(Action ac:leg) outcomes.push_back({ac, outcome_map[ac]/sum_outcomes});
+  }
   return outcomes;
 }
 
@@ -931,6 +962,7 @@ void PloState::NewRound() {
   cur_player_ = kChancePlayerId;
   last_to_act_ = 0;
   cur_max_bet_ = 0;
+  nr_raises_ = 0;
   action_is_closed_ = false;
   std::fill(cur_round_bet_.begin(), cur_round_bet_.end(), 0);
 }
@@ -1036,7 +1068,7 @@ PloGame::PloGame(const GameParameters& params)
     : Game(kGameType, params),
       num_players_(ParameterValue<int>("players")),
       suit_isomorphism_(ParameterValue<bool>("suit_isomorphism")),
-      game_abstraction_(ParameterValue<bool>("game_abstraction")) {
+      game_abstraction_(ParameterValue<bool>("game_abstraction")){
   SPIEL_CHECK_GE(num_players_, kGameType.min_num_players);
   SPIEL_CHECK_LE(num_players_, kGameType.max_num_players);
   default_observer_ = std::make_shared<PloObserver>(kDefaultObsType);
@@ -1045,8 +1077,7 @@ PloGame::PloGame(const GameParameters& params)
 
 std::unique_ptr<State> PloGame::NewInitialState() const {
   return absl::make_unique<PloState>(shared_from_this(),
-                                       /*suit_isomorphism=*/suit_isomorphism_,
-                                       /*game_abstraction=*/game_abstraction_);
+                                       /*suit_isomorphism=*/suit_isomorphism_, game_abstraction_);
 }
 
 int PloGame::MaxChanceOutcomes() const {
