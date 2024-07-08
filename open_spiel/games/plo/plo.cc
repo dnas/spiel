@@ -56,7 +56,7 @@ const GameType kGameType{/*short_name=*/"plo",
                          /*parameter_specification=*/
                          {{"players", GameParameter(kDefaultPlayers)},
                           {"suit_isomorphism", GameParameter(true)},
-                          {"game_abstraction", GameParameter(true)}}};
+                          {"game_abstraction", GameParameter(false)}}};
 
 std::shared_ptr<const Game> Factory(const GameParameters& params) {
   return std::shared_ptr<const Game>(new PloGame(params));
@@ -300,11 +300,11 @@ PloState::PloState(std::shared_ptr<const Game> game,
   max_raises_ = 100000000; //should be infinity
   //ABSTRACTION
   if(game_abstraction_){
-    nr_flops_ = 1;
-    nr_turns_ = 1;
-    nr_rivers_ = 1;
+    nr_flops_ = 2;
+    nr_turns_ = 2;
+    nr_rivers_ = 2;
     group_by_ = 1;
-    nr_holes_ = 1;
+    nr_holes_ = 8;
     max_raises_ = 1;
   }
 }
@@ -826,6 +826,9 @@ int PloState::NextPlayer() const {
 }
 
 HandScore PloState::GetScoreFrom5(std::vector<Card> cards) const {
+  //Returns the hand score of a set of 5 cards. First comes the absolute rank (https://en.wikipedia.org/wiki/List_of_poker_hands#Hand-ranking_categories)
+  //Then come the revelant "kicker" information - how to dispute ties in case of same hand rank
+  //A HandScore is better iff its vector is lexicographically greater. See implementation in plo.h
   std::sort(cards.begin(), cards.end());
   bool flush = true;
   bool straight = true;

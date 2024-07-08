@@ -52,7 +52,7 @@ void CheckNashPLO(const Game& game, const Policy& policy) {
 void CFRTest_PLO() {
   std::shared_ptr<const Game> game = LoadGame("plo");
   CFRSolver solver(*game);
-  for (int i = 0; i < 1; i++) {
+  for (int i = 0; i < 200; i++) {
     solver.EvaluateAndUpdatePolicy();
     if(i%1000==0) std::cout << i/100 << std::endl;
   }
