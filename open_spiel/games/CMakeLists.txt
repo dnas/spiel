@@ -98,6 +98,8 @@ set(GAME_SOURCES
   simple_poker/simple_poker.h
   plo/plo.cc
   plo/plo.h
+  preflop/preflop.cc
+  preflop/preflop.h
   laser_tag/laser_tag.cc
   laser_tag/laser_tag.h
   leduc_poker/leduc_poker.cc

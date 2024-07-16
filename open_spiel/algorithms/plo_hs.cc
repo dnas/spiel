@@ -12,6 +12,7 @@
 #include<map>
 #include<deque>
 #include<chrono>
+#include<fstream>
 
 std::mt19937 rng(5334);
 
@@ -46,6 +47,8 @@ class Card{
     }
 };
 
+inline const Card kInvalidCard{-10000, -10000};
+
 bool comp(std::vector<Card> a, std::vector<Card> b){
   std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
   int i = 0;
@@ -65,6 +68,9 @@ bool comp_eq(std::vector<Card> a, std::vector<Card> b){
 class Hole{
   public:
     std::vector<Card> cards;
+    Hole(){
+      cards.assign(4, kInvalidCard);
+    }
     Hole(Card c0, Card c1, Card c2, Card c3){
       cards = {c0, c1, c2, c3};
     }
@@ -108,7 +114,6 @@ class HandScore{
 };
 
 // Default parameters.
-inline const Card kInvalidCard{-10000, -10000};
 inline const Hole kInvalidHole{kInvalidCard, kInvalidCard, kInvalidCard, kInvalidCard};
 const int default_deck_size = 52;
 
@@ -398,6 +403,138 @@ void AllRolloutEquity(int nr_opphands, int nr_rollouts){
   }
 }
 
+Hole HoleFromString(std::string s){
+  std::vector<Card> hole;
+  for(int i=0;i<s.length();i++){
+    if(s[i]=='-'){
+      int j=i-1;
+      for(;j>=0;j--) if('0'>s[j]||s[j]>'9') break;
+      int rank = std::stoi(s.substr(j+1, i-1-j));
+      int suit = s[i+1]-'0';
+      hole.push_back(Card(rank, suit));
+    }
+  }
+  return Hole(hole);
+}
+
+bool CheckDuplicate(){
+  std::set<Card> flop;
+  for(int i=0;i<3;i++) flop.insert(public_cards_[i]);
+  for(int i=0;i<4;i++) if(flop.find(private_hole_[0].cards[i])!=flop.end()) return true;
+  return false;
+}
+
+double FlopEquity(int nr_rollouts){
+  std::vector<Card> slim_deck;
+  for(int i=0;i<default_deck_size;i++) if(deck_[i]!=kInvalidCard) slim_deck.push_back(deck_[i]);
+  double equity = 0;
+  for(int iii=0;iii<nr_rollouts;iii++){
+    std::vector<int> inds_changed(2, -1);
+    for(int i=3;i<5;i++){
+      while(public_cards_[i]==kInvalidCard){
+        int rnd_ind = rng()%((int) slim_deck.size());
+        public_cards_[i] = slim_deck[rnd_ind];
+        slim_deck[rnd_ind] = kInvalidCard;
+        inds_changed[i-3] = rnd_ind;
+      }
+    }
+    HandScore p0 = RankHand(0); HandScore p1 = RankHand(1);
+    if(p1<p0) equity += 1.0;
+    else if(p1==p0) equity += 0.5;
+    for(int i=3;i<5;i++) slim_deck[inds_changed[i-3]] = public_cards_[i];
+    for(int i=3;i<5;i++) public_cards_[i] = kInvalidCard;
+  }
+  return equity/nr_rollouts;
+}
+
+void AllFlopEquity(int nr_flops, int nr_opphands, int nr_rollouts){
+  //Estimates E[HS] (https://poker.cs.ualberta.ca/publications/AAMAS13-abstraction.pdf) AFTER the flop was dealt
+  //using nr_opphands as the number of uniformly sampled opponent hands, and nr_rollouts as the number of rollouts
+  std::vector<std::pair<Hole, double>> all_hands = ComputeHands();
+  std::vector<std::vector<int>> flop_inds;
+  for(int iii=0;iii<nr_flops;){
+    std::vector<int> cur_flop_ind;
+    for(int i=0;i<3;i++) cur_flop_ind.push_back(rng()%default_deck_size);
+    std::sort(cur_flop_ind.begin(), cur_flop_ind.end());
+    if(cur_flop_ind[0]==cur_flop_ind[1]||cur_flop_ind[1]==cur_flop_ind[2]) continue;
+    flop_inds.push_back(cur_flop_ind);
+    iii++;
+  }
+  std::reverse(all_hands.begin(), all_hands.end());
+  std::ofstream thefile;
+  for(int i_flops = 0;i_flops<nr_flops;i_flops++){
+    std::string file_name = "flops"+std::to_string(i_flops)+".txt";
+    thefile.open(file_name);
+    thefile << flop_inds[i_flops][0] << " " << flop_inds[i_flops][1] << " " << flop_inds[i_flops][2] << "\n";
+    thefile << deck_[flop_inds[i_flops][0]].ToString() << " " << deck_[flop_inds[i_flops][1]].ToString() << " " << deck_[flop_inds[i_flops][2]].ToString() << "\n";
+    for(int i=0;i<3;i++){
+      public_cards_[i] = deck_[flop_inds[i_flops][i]];
+      deck_[flop_inds[i_flops][i]] = kInvalidCard;
+    }
+    for(auto pair_hd:all_hands){
+      Hole cur_hole = pair_hd.first;
+      //Update information
+      for(int i=0;i<4;i++) deck_[IndexFromCard(cur_hole.cards[i])] = kInvalidCard;
+      //UpdateSuitClasses(cur_hole.cards, suit_classes_);
+      private_hole_[0] = cur_hole;
+      if(!CheckDuplicate()){
+        //Get rollout equity for this hand
+        std::vector<Card> slim_deck;
+        for(int i=0;i<default_deck_size;i++) if(deck_[i]!=kInvalidCard) slim_deck.push_back(deck_[i]);
+        double total_equity = 0;
+        for(int i_opp=0;i_opp<nr_opphands;i_opp++){
+          std::set<int> opp_cards_inds;
+          while((int)opp_cards_inds.size()<4) opp_cards_inds.insert(rng()%((int) slim_deck.size()));
+          auto it = opp_cards_inds.begin();
+          Hole opp_hole;
+          for(int i=0;i<4;i++){
+            opp_hole.cards[i] = slim_deck[*it];
+            deck_[IndexFromCard(slim_deck[*it])] = kInvalidCard;
+            slim_deck[*it] = kInvalidCard;
+            it++;
+          }
+          private_hole_[1] = opp_hole;
+          total_equity += FlopEquity(nr_rollouts)*1.0/nr_opphands;
+          for(int i=3;i>=0;i--){
+            it--;
+            std::swap(slim_deck[*it], opp_hole.cards[i]);
+            deck_[IndexFromCard(slim_deck[*it])] = slim_deck[*it];
+          }
+          private_hole_[1] = kInvalidHole;
+        }
+        thefile << cur_hole.ToString() << " " << total_equity << std::endl;
+      }
+      //Go back to previous information
+      for(int i=0;i<4;i++) deck_[IndexFromCard(cur_hole.cards[i])] = cur_hole.cards[i];
+      //suit_classes_.assign(1, {0,1,2,3});
+      private_hole_[0] = kInvalidHole;
+    }
+    for(int i=0;i<3;i++) std::swap(public_cards_[i], deck_[flop_inds[i_flops][i]]);
+    thefile.close();
+  }
+}
+
+std::map<Hole, double> preflop_strength_; //Given a hole card combination, what's it's rollout strength?
+std::vector<std::pair<double, Hole>> strength_vector_; //same as above, in pair format
+
+void ComputeBuckets(int nr_buckets){
+  std::ifstream file("plo_preflop_hs.txt");
+  std::string content;
+  Hole temp_hole;
+  double temp_strength;
+  int zzz = 0;
+  while(file >> content) {
+    if(zzz%2==0) temp_hole = HoleFromString(content);
+    else{
+      temp_strength = stod(content);
+      preflop_strength_[temp_hole] = temp_strength;
+      strength_vector_.push_back({temp_strength, temp_hole});
+    }
+    zzz++;
+  }
+  std::sort(strength_vector_.begin(), strength_vector_.end());
+}
+
 int main(){
   //std::ios::sync_with_stdio(0); std::cin.tie(0); std::cout.tie(0);
 	std::cout.precision(6);
@@ -411,6 +548,20 @@ int main(){
   private_hole_.assign(2, kInvalidHole);
   public_cards_.assign(5, kInvalidCard);
 
-  AllRolloutEquity(300, 300);
+  //AllRolloutEquity(300, 300);
+
+  /*
+  std::ifstream file("plo_preflop_hs.txt");
+  std::string content;
+  int zzz = 0;
+  while(file >> content) {
+    if(zzz%2==0) std::cout << HoleFromString(content).ToString() << std::endl;
+    else std::cout << stod(content) << std::endl;
+    zzz++;
+    if(zzz==4) break;
+  }
+  */
+  //AllFlopEquity(1,60,20);
+  ComputeBuckets();
   return 0;
 }

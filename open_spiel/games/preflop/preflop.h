@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// A generalized version of a Plo poker, a simple but non-trivial poker game
+// A generalized version of a Preflop poker, a simple but non-trivial poker game
 // described in http://poker.cs.ualberta.ca/publications/UAI05.pdf .
 //
-// Taken verbatim from the linked paper above: "In Plo hold'em, the deck
+// Taken verbatim from the linked paper above: "In Preflop hold'em, the deck
 // consists of two suits with three cards in each suit. There are two rounds.
 // In the first round a single private card is dealt to each player. In the
 // second round a single board card is revealed. There is a two-bet maximum,
@@ -34,8 +34,8 @@
 //                                between cards of different suits with
 //                                the same rank              (default = false)
 
-#ifndef OPEN_SPIEL_GAMES_PLO_H_
-#define OPEN_SPIEL_GAMES_PLO_H_
+#ifndef OPEN_SPIEL_GAMES_PREFLOP_H_
+#define OPEN_SPIEL_GAMES_PREFLOP_H_
 
 #include <array>
 #include <memory>
@@ -48,7 +48,7 @@
 #include "open_spiel/spiel.h"
 
 namespace open_spiel {
-namespace plo {
+namespace preflop {
 
 class Card{
   public:
@@ -81,6 +81,8 @@ class Card{
     }
 };
 
+inline const Card kInvalidCard{-10000, -10000};
+
 bool comp(std::vector<Card> a, std::vector<Card> b){
   std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
   int i = 0;
@@ -100,6 +102,9 @@ bool comp_eq(std::vector<Card> a, std::vector<Card> b){
 class Hole{
   public:
     std::vector<Card> cards;
+    Hole(){
+      cards.assign(4, kInvalidCard);
+    }
     Hole(Card c0, Card c1, Card c2, Card c3){
       cards = {c0, c1, c2, c3};
     }
@@ -143,28 +148,24 @@ class HandScore{
 };
 
 // Default parameters.
-
-inline const Card kInvalidCard{-10000, -10000};
 inline const Hole kInvalidHole{kInvalidCard, kInvalidCard, kInvalidCard, kInvalidCard};
 inline constexpr int kDefaultPlayers = 2;
 inline constexpr int kDefaultStacks = 1000;
 inline constexpr int default_deck_size = 52;
 inline const std::vector<double> bet_sizes = {1};
 inline const std::vector<double> raise_sizes = {1};
-bool small_game = false; // whether to stop play after flop
 
 // Number of info states in the 2P game with default params.
 inline constexpr int kNumInfoStates = 10000000;
 
-class PloGame;
-class PloObserver;
+class PreflopGame;
+class PreflopObserver;
 
 enum ActionType { kF = 0, kX = 1, kC = 2, kB = 3, kR = 4};
 
-class PloState : public State {
+class PreflopState : public State {
  public:
-  explicit PloState(std::shared_ptr<const Game> game,
-                      bool suit_isomorphism, bool game_abstraction);
+  explicit PreflopState(std::shared_ptr<const Game> game);
 
   Player CurrentPlayer() const override;
   std::string ActionToString(Player player, Action move) const override;
@@ -227,7 +228,7 @@ class PloState : public State {
   void DoApplyAction(Action move) override;
 
  private:
-  friend class PloObserver;
+  friend class PreflopObserver;
 
   int NextPlayer() const;
   void ResolveWinner();
@@ -242,6 +243,8 @@ class PloState : public State {
   std::vector<std::vector<Card>> GetClasses(std::vector<int> inds, bool to_sort=true) const;
   int GetCardIndex(Card c) const;
   void UpdateSuitClasses(std::vector<Card> cs, std::vector<std::vector<int>> my_suit_classes);
+  Hole HoleFromString(std::string s) const;
+  std::vector<std::pair<Hole, double>> ComputeHands() const;
 
   // Fields sets to bad/invalid values. Use Game::NewInitialState().
   Player cur_player_;
@@ -275,27 +278,22 @@ class PloState : public State {
   std::vector<int> round1_sequence_;
   std::vector<int> round2_sequence_;
   std::vector<int> round3_sequence_;
+  std::map<Hole, double> preflop_strength_; //Given a hole card combination, what's it's rollout strength?
+  std::vector<std::pair<double, Hole>> strength_vector_; //same as above, in pair format
   // Players cannot distinguish between cards of different suits with the same
   // rank.
-  bool suit_isomorphism_;
   std::vector<std::vector<int>> suit_classes_; //Current vector of classes of indistinguishable suits, plus a counter for each class.
   //for example, we might have the pairs {{0,3}, {1,2}}, meaning that suits 0,3 are equivalent, and same for 1,2.
   std::vector<std::vector<int>> suit_classes_flop_; //A snapshot of the above vector just before the flop is dealt.
   //This is important because the turn may join new classes again
 
-  bool game_abstraction_;
-  //ABSTRACTION
-  int nr_flops_;
-  int nr_turns_;
-  int nr_rivers_;
-  int group_by_; //how many starting hole hands are grouped together
-  int nr_holes_;
   int max_raises_; //how many raises are possible per round
+  int nr_buckets_; //how many buckets to group hands into
 };
 
-class PloGame : public Game {
+class PreflopGame : public Game {
  public:
-  explicit PloGame(const GameParameters& params);
+  explicit PreflopGame(const GameParameters& params);
 
   int NumDistinctActions() const override { return 5; }
   std::unique_ptr<State> NewInitialState() const override;
@@ -321,25 +319,18 @@ class PloGame : public Game {
       const GameParameters& params) const override;
 
   // Used to implement the old observation API.
-  std::shared_ptr<PloObserver> default_observer_;
-  std::shared_ptr<PloObserver> info_state_observer_;
+  std::shared_ptr<PreflopObserver> default_observer_;
+  std::shared_ptr<PreflopObserver> info_state_observer_;
 
  private:
   int num_players_;  // Number of players.
   // Players cannot distinguish between cards of different suits with the same
   // rank.
-  bool suit_isomorphism_;
 
-  bool game_abstraction_;
-  //ABSTRACTION
-  int nr_flops_;
-  int nr_turns_;
-  int nr_rivers_;
-  int group_by_; //how many starting hole hands are grouped together
   int max_raises_; //how many raises are possible per round
 };
 
-}  // namespace plo
+}  // namespace preflop
 }  // namespace open_spiel
 
-#endif  // OPEN_SPIEL_GAMES_PLO_H_
+#endif  // OPEN_SPIEL_GAMES_PREFLOP_H_
