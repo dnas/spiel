@@ -533,6 +533,7 @@ void ComputeBuckets(int nr_buckets){
     zzz++;
   }
   std::sort(strength_vector_.begin(), strength_vector_.end());
+  
 }
 
 int main(){
